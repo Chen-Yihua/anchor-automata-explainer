@@ -3,6 +3,7 @@
 本文件說明 Anchor-Automata-Explainer 的進階開發資訊，包括 anchor 內部 state 結構、sample_fcn 功能、explain 主要參數，以及專案自訂 anchor 實作的修改紀錄，方便二次開發、debug、客製任務。
 
 1. **anchor state（各輪學習過程主要紀錄）**
+   
     **Text 類型 anchor state 範例**
     ```python
     't_idx':         # dict，每個候選 anchor 覆蓋到的樣本 index
@@ -38,7 +39,8 @@
     'coverage_data':   # 所有抽樣資料（算覆蓋率用）
     ```
 
-2. **sample_fcn 物件屬性說明（只有 tabular state 中有）**
+3. **sample_fcn 物件屬性說明（只有 tabular state 中有）**
+   
     ```python
     feature_names : 欄位名稱（如 ['Age', 'Workclass', 'Education', ...]）
     n_records : 總樣本數
@@ -64,25 +66,27 @@
     # Age 在第 3 個 bin，例如 (35,45]（用 ord_lookup[0][2]）
     ```
 
-3. **explain 主要參數**
-  | 參數名稱                  | 預設值   | 說明                  |
-| --------------------- | ----- | ------------------- |
-| **threshold**         | 0.95  | Anchor precision 門檻 |
-| delta                 | 0.1   | 精度的信賴區間(90%)        |
-| tau                   | 0.15  | 容忍精度誤差              |
-| **batch\_size**       | 100   | 每批重抽樣數              |
-| **coverage\_samples** | 10000 | 用於 coverage 的全域樣本數  |
-| beam\_size            | 1     | 每輪保留 anchor 數       |
-| stop\_on\_first       | False | 是否找到就停              |
-| max\_anchor\_size     | None  | 最大 anchor 長度        |
-| min\_samples\_start   | 100   | 初始精度估計數量            |
-| **n\_covered\_ex**    | 10    | 每 anchor 儲存的正反例數    |
-| binary\_cache\_size   | 10000 | 抽樣 cache 大小         |
-| cache\_margin         | 1000  | 抽樣 cache 預留         |
-| verbose               | False | 顯示詳情                |
-| verbose\_every        | 1     | 幾輪輸出一次              |
+5. **explain 主要參數**
+   
+     | 參數名稱                  | 預設值   | 說明                  |
+   | --------------------- | ----- | ------------------- |
+   | **threshold**         | 0.95  | Anchor precision 門檻 |
+   | delta                 | 0.1   | 精度的信賴區間(90%)        |
+   | tau                   | 0.15  | 容忍精度誤差              |
+   | **batch\_size**       | 100   | 每批重抽樣數              |
+   | **coverage\_samples** | 10000 | 用於 coverage 的全域樣本數  |
+   | beam\_size            | 1     | 每輪保留 anchor 數       |
+   | stop\_on\_first       | False | 是否找到就停              |
+   | max\_anchor\_size     | None  | 最大 anchor 長度        |
+   | min\_samples\_start   | 100   | 初始精度估計數量            |
+   | **n\_covered\_ex**    | 10    | 每 anchor 儲存的正反例數    |
+   | binary\_cache\_size   | 10000 | 抽樣 cache 大小         |
+   | cache\_margin         | 1000  | 抽樣 cache 預留         |
+   | verbose               | False | 顯示詳情                |
+   | verbose\_every        | 1     | 幾輪輸出一次              |
 
 4. **anchor_base.py 主要修改紀錄**
+   
   1. `anchor_base.py` 中的 `anchor_beam()` line 748 - line 749 : 
        * 將 `coverage_raw` (初始抽樣樣本的原始格式)、`coverage_label` (預測結果) 加入 state
   2. `anchor_base.py` 中的 `draw_samples()` line 379 - line 427 : 
@@ -92,6 +96,7 @@
      * 於學習過程中，計算 Anchor 的 Coverage/Precision/Accuracy
 
 5. **進階開發提醒**
+   
    * 建議修改/客製 anchor 行為請直接修改 modified_packages/alibi/ 下相關 .py
    * explainer.mab.state 可取得所有學習/精度/覆蓋等狀態
    * 若需重寫解釋流程、加自動機結合分析，可參考 examples/RPNI/ 內的各型範例
