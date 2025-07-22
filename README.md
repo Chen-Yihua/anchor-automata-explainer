@@ -8,7 +8,7 @@
 
 - 支援完整 anchor 解釋流程中的 intermediate state 與訓練紀錄。
 - 每輪 anchor 搜尋與樣本覆蓋率、精度等評估皆可存取。
-- 自定義 anchor 狀態結構如下（參數說明與 anchor 內部更動見 [附錄](./DEV.md)）。
+- 自定義 anchor 狀態結構如下（參數說明與 anchor 內部更動見 [DEV.md](./DEV.md)）。
 
 ---
 
@@ -119,7 +119,6 @@ python examples/RPNI/TestRobotTabularRPNI.py
 
 ## 進階開發/參數詳解
 
-- anchor 各類參數與內部狀態說明，請見 [docs/DEV.md](docs/DEV.md)
-- alibi 主要修改記錄、anchor 內部實作細節，請見 [docs/DEV.md](docs/DEV.md)
-
+- anchor 各類參數與內部狀態說明，請見 [DEV.md](./DEV.md)
+- alibi 主要修改記錄、anchor 內部實作細節，請見 [DEV.md](./DEV.md)
 ---
