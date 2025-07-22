@@ -62,9 +62,11 @@ python examples/RPNI/TestRobotTabularRPNI.py
 ```
 執行結果會輸出 anchor explanation、anchor coverage、訓練過程 log，以及建構出的 DFA。
 
+---
+
 ## 自定義規則／自定義模型
 
-** **以 tabular 為例，解釋自定義規則並產生 DFA：**
+**以 tabular 為例，解釋自定義規則並產生 DFA：**
 
   1. **準備 Tabular 資料**
      * 可用 DataFrame 或 numpy array
