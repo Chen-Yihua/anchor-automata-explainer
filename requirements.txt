@@ -1,6 +1,6 @@
 aalpy==1.5.1
 absl-py==2.3.0
-# alibi 請用本專案內自帶版本，不要安裝官方版
+# For alibi, please use the custom version included in this project. Do NOT install the official version from PyPI.
 -e ./modified_packages/alibi
 annotated-types==0.7.0
 astunparse==1.6.3
