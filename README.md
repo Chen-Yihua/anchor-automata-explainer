@@ -4,6 +4,12 @@
 
 **Anchor-Automata-Explainer** 是一個結合 Anchor 解釋器與 DFA/RPNI 學習的解釋型 AI 工具，支援 Tabular、Text、Image 類型資料，並能將模型行為以可視化自動機（DFA）規則呈現，幫助理解模型決策依據。
 
+本專案在原 anchor 進行以下增強與記錄：
+
+- 支援完整 anchor 解釋流程中的 intermediate state 與訓練紀錄。
+- 每輪 anchor 搜尋與樣本覆蓋率、精度等評估皆可存取。
+- 自定義 anchor 狀態結構如下（參數說明與 anchor 內部更動見 [附錄](./DEV.md)）。
+
 ---
 
 ## 目錄
@@ -11,7 +17,7 @@
 - [資料夾結構](#資料夾結構)
 - [快速開始](#快速開始)
 - [自定義規則／自定義模型](#自定義規則自定義模型)
-- [套件說明與修改方式](#套件說明與修改方式)
+- [進階開發/參數詳解](#進階開發/參數詳解)
 - [引用與感謝](#引用與感謝)
 
 ---
@@ -107,3 +113,13 @@ python examples/RPNI/TestRobotTabularRPNI.py
 | Tabular（自訂）  | `TestRobotTabularRPNI.py` |
 | Text         | `TestTextRPNI.py`         |
 | Image        | `TestImageRPNI.py`        |
+* 建議複製上述檔案結構，調整資料/模型部分即可
+
+---
+
+## 進階開發/參數詳解
+
+- anchor 各類參數與內部狀態說明，請見 [docs/DEV.md](docs/DEV.md)
+- alibi 主要修改記錄、anchor 內部實作細節，請見 [docs/DEV.md](docs/DEV.md)
+
+---
