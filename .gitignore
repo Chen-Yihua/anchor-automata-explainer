@@ -1,0 +1,21 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual env
+venv/
+env/
+.venv/
+
+# VSCode 設定
+.vscode/
+
+# Pip/conda/build 產生的檔案
+*.egg-info/
+*.dist-info/
+build/
+site-packages/
+
+# OS
+.DS_Store
+Thumbs.db
