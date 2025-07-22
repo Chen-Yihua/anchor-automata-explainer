@@ -87,13 +87,13 @@
 
 4. **anchor_base.py 主要修改紀錄**
    
-  1. `anchor_base.py` 中的 `anchor_beam()` line 748 - line 749 : 
-       * 將 `coverage_raw` (初始抽樣樣本的原始格式)、`coverage_label` (預測結果) 加入 state
-  2. `anchor_base.py` 中的 `draw_samples()` line 379 - line 427 : 
-     * 更新學習過程中的抽樣紀錄 (每次抽樣的二元值、原始值與其對應 label)
-     * 於學習過程中生成自動機，並計算自動機的 Coverage/Precision/Accuracy
-  3. `anchor_base.py` 中的 `update_state()` line 557 - line 560 : 
-     * 於學習過程中，計算 Anchor 的 Coverage/Precision/Accuracy
+     1. `anchor_base.py` 中的 `anchor_beam()` line 748 - line 749 : 
+          * 將 `coverage_raw` (初始抽樣樣本的原始格式)、`coverage_label` (預測結果) 加入 state
+     2. `anchor_base.py` 中的 `draw_samples()` line 379 - line 427 : 
+        * 更新學習過程中的抽樣紀錄 (每次抽樣的二元值、原始值與其對應 label)
+        * 於學習過程中生成自動機，並計算自動機的 Coverage/Precision/Accuracy
+     3. `anchor_base.py` 中的 `update_state()` line 557 - line 560 : 
+        * 於學習過程中，計算 Anchor 的 Coverage/Precision/Accuracy
 
 5. **進階開發提醒**
    
