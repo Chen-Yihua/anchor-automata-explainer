@@ -50,6 +50,7 @@
 ├── modified_packages/      # 修改過的 alibi 套件等
 ├── requirements.txt        # 依賴套件列表
 ├── README.md
+├── DEV.md
 ```
 * src/：主要 class、功能模組（如 automaton、robot_operation 等）
 * examples/：各種 anchor + automaton 應用範例（如 TestRobotTabularRPNI.py、TestTextRPNI.py 等）
@@ -71,11 +72,11 @@ python examples/RPNI/TestRobotTabularRPNI.py
 
 ## 自定義規則／自定義模型
 
-**以 tabular 為例，解釋自定義規則並產生 DFA：**
+**以 tabular 為例，解釋自定義預測模型並產生 DFA：**
 
   1. **準備 Tabular 資料**
      * 可用 DataFrame 或 numpy array
-     * 特徵可含類別型、數值型，推薦每個類別型欄位用 LabelEncoder/OneHotEncoder 轉成數值
+     * 特徵可含類別型、數值型，建議每個類別型欄位用 LabelEncoder/OneHotEncoder 轉成數值
      * Tabular 資料須包含以下物件：
        * data（N, M array）
        * target（N, 1 array）
@@ -86,7 +87,7 @@ python examples/RPNI/TestRobotTabularRPNI.py
      * 必須提供 predict_fn = lambda x: model.predict(x)（確保 shape=(N, M)），或自定義 function，輸入 2D array，回傳 label list
   3. **AnchorTabular 解釋流程**
      * 參考 TestTabularBinary.py、TestTextRPNI.py 的寫法
-     * 將你的 data、feature_names、category_map、predict_fn 帶入 AnchorTabular
+     * 將你的 data、feature_names、category_map、predict_fn 帶入 AnchorTabular，以製作 explainer
      * explainer.fit(data) 後，直接呼叫：
        ```python
        explanation = explainer.explain('Tabular', test_instance, ...) # anchor 類型可選 'Text', 'Tabular', 'Image'
