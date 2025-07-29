@@ -39,7 +39,7 @@
     'coverage_data':   # 所有抽樣資料（算覆蓋率用）
     ```
 
-3. **sample_fcn 物件屬性說明（只有 tabular state 中有）**
+2. **sample_fcn 物件屬性說明（只有 tabular state 中有）**
    
     ```python
     feature_names : 欄位名稱（如 ['Age', 'Workclass', 'Education', ...]）
@@ -66,7 +66,7 @@
     # Age 在第 3 個 bin，例如 (35,45]（用 ord_lookup[0][2]）
     ```
 
-5. **explain 主要參數**
+3. **explain 主要參數**
    
      | 參數名稱                  | 預設值   | 說明                  |
    | --------------------- | ----- | ------------------- |
@@ -85,7 +85,24 @@
    | verbose               | False | 顯示詳情                |
    | verbose\_every        | 1     | 幾輪輸出一次              |
 
-4. **anchor_base.py 主要修改紀錄**
+4. **Precision、Accuracy、Coverage 定義**
+   
+   * Anchor
+     - Coverage : 符合 anchor 條件的樣本 / 所有 Coverage data
+     - 訓練集 Precision : 符合 anchor 且 label 為 1 / 符合某 anchor 的訓練樣本
+     - 測試集 Precision : 符合 anchor 且 label 為 1 / 符合某 anchor 的 Coverage data
+     - 測試集 Accuracy : 符合 anchor 且 label 為對的 / 所有 Coverage data
+       
+   * Automaton
+     - Coverage : 自動機接受的樣本 / Coverage data
+     - 訓練集 Precision : 自動機接受且 label 為 1 / 符合某 anchor 的訓練樣本
+     - 測試集 Precision : 自動機接受且 label 為 1 / 符合某 anchor 的 Coverage data
+     - 測試集 Accuracy : 自動機接受且 label 為對的 / 所有 Coverage data
+     
+  - True label 為 1 : 模型預測與原始預測一致
+  - True label 為對的 :  True label 是 0 (自動機拒絕) + True label 是  1 (自動機接受)
+
+6. **anchor_base.py 主要修改紀錄**
    
      1. `anchor_base.py` 中的 `anchor_beam()` line 748 - line 749 : 
           * 將 `coverage_raw` (初始抽樣樣本的原始格式)、`coverage_label` (預測結果) 加入 state
@@ -95,10 +112,11 @@
      3. `anchor_base.py` 中的 `update_state()` line 557 - line 560 : 
         * 於學習過程中，計算 Anchor 的 Coverage/Precision/Accuracy
 
-5. **進階開發提醒**
+7. **進階開發提醒**
    
-   * 建議修改/客製 anchor 行為請直接修改 modified_packages/alibi/ 下相關 .py
-   * explainer.mab.state 可取得所有學習/精度/覆蓋等狀態
-   * 若需重寫解釋流程、加自動機結合分析，可參考 examples/RPNI/ 內的各型範例
-   * 如需完整追蹤 anchor 行為、樣本擾動、遮罩/label/precision 等統計，可直接輸出 state 物件
+   * 修改 anchor 行為請直接修改 `modified_packages/alibi/` 下相關 .py
+   * `explainer.mab.state` 可取得所有學習/精度/覆蓋等狀態
+   * 如需完整追蹤 anchor 行為、樣本擾動、label、precision 等統計，可直接輸出 state 物件
+   * 若需重寫解釋流程、加自動機結合分析，可參考 `examples/RPNI/` 內的各型範例
+   * 資料集製作可參考 `alibi.datasets` 內的相關方法 及 `src/robot_operation` 的 `fetch_robot` 方法(自定義 tabular 例子)
      
