@@ -98,9 +98,8 @@
      - 訓練集 Precision : 自動機接受且 label 為 1 / 符合某 anchor 的訓練樣本
      - 測試集 Precision : 自動機接受且 label 為 1 / 符合某 anchor 的 Coverage data
      - 測試集 Accuracy : 自動機接受且 label 為對的 / 所有 Coverage data
-     
-     - True label 為 1 : 模型預測與原始預測一致
-     - True label 為對的 :  True label 是 0 (自動機拒絕) + True label 是  1 (自動機接受)
+   - True label 為 1 : 模型預測與原始預測一致
+   - True label 為對的 :  True label 是 0 (自動機拒絕) + True label 是  1 (自動機接受)
 
 5. **anchor_base.py 主要修改紀錄**
    
