@@ -1,6 +1,5 @@
 import sys
 sys.path.insert(0, './src')
-sys.path.insert(0, './modified_packages')
 from tee import Tee
 import spacy
 from alibi.explainers import AnchorText

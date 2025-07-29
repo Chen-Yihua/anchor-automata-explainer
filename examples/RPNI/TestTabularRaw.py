@@ -1,8 +1,8 @@
 # 使用原始樣本 (["age =49", "education = Bachelors",...]) 製作自動機
+# 若需要此例子，需先修改被動樣本格式轉換方法
 
 import sys
 sys.path.insert(0, './src')
-sys.path.insert(0, './modified_packages')
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.compose import ColumnTransformer
