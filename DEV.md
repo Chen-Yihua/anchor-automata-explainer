@@ -99,10 +99,10 @@
      - 測試集 Precision : 自動機接受且 label 為 1 / 符合某 anchor 的 Coverage data
      - 測試集 Accuracy : 自動機接受且 label 為對的 / 所有 Coverage data
      
-  - True label 為 1 : 模型預測與原始預測一致
-  - True label 為對的 :  True label 是 0 (自動機拒絕) + True label 是  1 (自動機接受)
+     - True label 為 1 : 模型預測與原始預測一致
+     - True label 為對的 :  True label 是 0 (自動機拒絕) + True label 是  1 (自動機接受)
 
-6. **anchor_base.py 主要修改紀錄**
+5. **anchor_base.py 主要修改紀錄**
    
      1. `anchor_base.py` 中的 `anchor_beam()` line 748 - line 749 : 
           * 將 `coverage_raw` (初始抽樣樣本的原始格式)、`coverage_label` (預測結果) 加入 state
@@ -112,7 +112,7 @@
      3. `anchor_base.py` 中的 `update_state()` line 557 - line 560 : 
         * 於學習過程中，計算 Anchor 的 Coverage/Precision/Accuracy
 
-7. **進階開發提醒**
+6. **進階開發提醒**
    
    * 修改 anchor 行為請直接修改 `modified_packages/alibi/` 下相關 .py
    * `explainer.mab.state` 可取得所有學習/精度/覆蓋等狀態
