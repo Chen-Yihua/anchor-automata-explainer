@@ -12,7 +12,9 @@ class RobotPredictor:
 
     def fetch_robot(self, features_drop: Optional[list] = None, return_X_y: bool = False, url_id: int = 0) -> \
         Union[Bunch, Tuple[np.ndarray, np.ndarray]]:
-        
+        """
+        產生 robot tabular
+        """
         import pandas as pd
         from itertools import product
         from sklearn.preprocessing import LabelEncoder
