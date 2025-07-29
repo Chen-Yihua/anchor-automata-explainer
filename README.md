@@ -39,7 +39,6 @@
    * 本專案有自訂修改過的 alibi 套件，需指定安裝路徑，請勿安裝官方 PyPI 版本的 alibi，要用這裡的修改版！
    ```bash
    pip install -r requirements.txt
-   pip install -e ./modified_packages/alibi
    ```
 
 ---
