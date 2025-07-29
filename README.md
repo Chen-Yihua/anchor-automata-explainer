@@ -50,6 +50,7 @@
 ├── modified_packages/      # 修改過的 alibi 套件等
 ├── requirements.txt        # 依賴套件列表
 ├── README.md
+├── DEV.md
 ```
 * src/：主要 class、功能模組（如 automaton、robot_operation 等）
 * examples/：各種 anchor + automaton 應用範例（如 TestRobotTabularRPNI.py、TestTextRPNI.py 等）
