@@ -72,7 +72,7 @@ python examples/RPNI/TestRobotTabularRPNI.py
 
 ## 自定義規則／自定義模型
 
-**以 tabular 為例，解釋自訂一預測模型並產生 DFA：**
+**以 tabular 為例，解釋自定義預測模型並產生 DFA：**
 
   1. **準備 Tabular 資料**
      * 可用 DataFrame 或 numpy array
