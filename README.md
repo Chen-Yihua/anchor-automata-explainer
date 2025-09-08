@@ -168,7 +168,7 @@ python examples/RPNI/TestRobotTabularRPNI.py
   2. **建立分類器**
      * 你可以用任何 scikit-learn 類模型，或自定義規則 predict_fn
      * predict_fn
-        * 輸入：numpy.ndarray，shape (N, M)
+        * 輸入：numpy.ndarray，shape (N, M)，如果輸入是整數索引，要先轉型，np.atleast_2d(X).astype(int) 
         * 輸出：numpy.ndarray，shape (N, )，內容為整數類別（0…K-1）或二元 {0,1}
   3. **AnchorTabular 解釋流程**
      * 參考 TestTabularBinary.py、TestTextRPNI.py 的寫法
