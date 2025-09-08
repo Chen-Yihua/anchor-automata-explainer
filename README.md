@@ -70,8 +70,42 @@ python examples/RPNI/TestRobotTabularRPNI.py
 
 ---
 
-## 自定義規則／自定義模型
+## 自定義模型
 
+依資料型別，請把原始資料整理成以下格式，讓 fetch_xxx 容易讀
+
+1. **Tabular（表格）**
+   * 檔案：CSV（UTF-8），首列為欄名。
+   * 欄位：
+      * 其中一欄是 標籤（分類：文字或整數皆可；回函式中會轉成 0…K-1）。
+      * 其他欄為特徵；若有類別型特徵，保持原文字（函式內會 LabelEncoder，並在 category_map 留對應）。
+   * 缺值：建議以空字串或 ?；我們會在函式內處理（例如轉成眾數/特定符號），類似 fetch_adult 的做法。
+   * 檔案擺放：
+      * 單檔：data.csv
+      * 多檔：可放 train.csv / test.csv（函式要能合併或分別回傳）。
+            
+2. **Text（文本分類）**
+   * 檔案：
+      A. 一個 tar.gz 裡面放兩個資料夾（或兩個檔），分別代表兩個 label（或多個 label）。
+      B. 或一個 TSV/CSV：欄位 text,label。
+   * 內容：每行一個樣本；label 建議用可讀字串（函式內轉 0…K-1），做法可參考 fetch_movie_sentiment 的分兩類讀法。
+     
+3. **Image（影像分類）**
+   * 資料夾結構（建議）：
+     ```bash
+      dataset/
+        train/
+          class_a/ *.jpg
+          class_b/ *.jpg
+          ...
+        test/
+          class_a/ *.jpg
+          class_b/ *.jpg
+          ...
+     ```
+   * 尺寸：不需事先統一；函式可提供 target_size 參數做 resize（如 load_cats）。
+   * 標籤：用資料夾名當類別名；函式內會建立 str_to_int 與 int_to_str 對應，類似 fetch_imagenet_10 風格
+   
 **以 tabular 為例，解釋自定義預測模型並產生 DFA：**
 
   1. **準備 Tabular 資料**
