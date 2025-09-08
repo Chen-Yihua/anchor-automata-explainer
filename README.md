@@ -106,57 +106,57 @@ python examples/RPNI/TestRobotTabularRPNI.py
    * 尺寸：不需事先統一；函式可提供 target_size 參數做 resize（如 load_cats）。
    * 標籤：用資料夾名當類別名；函式內會建立 str_to_int 與 int_to_str 對應，類似 fetch_imagenet_10 風格。
 
-本模組提供 fetch_xxx 函式，幫助載入不同類型的資料集 (tabular、text、image) : 
+**本模組提供 fetch_xxx 函式，幫助載入不同類型的資料集 (tabular、text、image) :**
 
-```bash
-return_X_y=True
-→ (X, y)，其中 X 為特徵，y 為整數化標籤
-return_X_y=False
-→ 回傳 Bunch 物件，包含：
-   * data：特徵
-   * target：標籤
-   * feature_names（tabular 用）
-   * target_names（分類標籤名稱）
-   * category_map（類別特徵的對應表）
-   * 其他依 dataset 而定（例如：int_to_str_labels、mean_channels）
-```
+   ```bash
+   return_X_y=True
+   → (X, y)，其中 X 為特徵，y 為整數化標籤
+   return_X_y=False
+   → 回傳 Bunch 物件，包含：
+      * data：二值化後特徵
+      * target：標籤
+      * feature_names（tabular 用）
+      * target_names（分類標籤名稱）
+      * category_map（類別特徵的對應表）
+      * 其他依 dataset 而定（例如：int_to_str_labels、mean_channels）
+   ```
 
-以下為可擴充的 fetch_custom_dataset 範例，可依資料類型進行修改，輸出格式一致即可。
+**以下為可擴充的 fetch_custom_dataset 範例，可依資料類型進行修改，輸出格式一致即可 :**
 
-```bash
-def fetch_custom_dataset(
-    source: str,
-    mode: str,  # "tabular" | "text" | "image"
-    return_X_y: bool = False,
-    target_col: Optional[str] = None,
-    target_size: Optional[Tuple[int, int]] = None,
-) -> Union[Bunch, Tuple[np.ndarray, np.ndarray]]:
-    """
-    通用 dataset 載入器樣板
-    - source: URL 或本地路徑
-    - mode:   tabular / text / image
-    - return_X_y: True → (X, y)，False → Bunch
-    - target_col: tabular 的標籤欄位
-    - target_size: image resize 用
-    """
-    ...
-    # 可參考 fetch_adult / fetch_movie_sentiment / load_cats 的實作
-```
+   ```bash
+   def fetch_custom_dataset(
+       source: str,
+       mode: str,  # "tabular" | "text" | "image"
+       return_X_y: bool = False,
+       target_col: Optional[str] = None,
+       target_size: Optional[Tuple[int, int]] = None,
+   ) -> Union[Bunch, Tuple[np.ndarray, np.ndarray]]:
+       """
+       通用 dataset 載入器樣板
+       - source: URL 或本地路徑
+       - mode:   tabular / text / image
+       - return_X_y: True → (X, y)，False → Bunch
+       - target_col: tabular 的標籤欄位
+       - target_size: image resize 用
+       """
+       ...
+       # 可參考 fetch_adult / fetch_movie_sentiment / load_cats 的實作
+   ```
 
-使用範例
-```bash
-# 1. Tabular
-X, y = fetch_custom_dataset("data.csv", mode="tabular", target_col="label", return_X_y=True)
+   **使用範例**
+   ```bash
+   # 1. Tabular
+   X, y = fetch_custom_dataset("data.csv", mode="tabular", target_col="label", return_X_y=True)
+   
+   # 2. Text
+   bunch = fetch_custom_dataset("reviews.csv", mode="text")
+   print(bunch.data[:3], bunch.target[:3])
+   
+   # 3. Image
+   X, y = fetch_custom_dataset("dataset", mode="image", target_size=(224, 224), return_X_y=True)
+   ```
 
-# 2. Text
-bunch = fetch_custom_dataset("reviews.csv", mode="text")
-print(bunch.data[:3], bunch.target[:3])
-
-# 3. Image
-X, y = fetch_custom_dataset("dataset", mode="image", target_size=(224, 224), return_X_y=True)
-```
-
-**以 tabular 為例，解釋自定義預測模型並產生 DFA：**
+**以 tabular 為例，解釋自定義模型並產生 DFA：**
 
   1. **準備 Tabular 資料**
      * 可用 DataFrame 或 numpy array，特徵可含類別型、數值型
@@ -176,18 +176,46 @@ X, y = fetch_custom_dataset("dataset", mode="image", target_size=(224, 224), ret
        explanation = explainer.explain('Tabular', test_instance, ...) # anchor 類型可選 'Text', 'Tabular', 'Image'
        ```
   4. **計算 DFA Intersection**
-     * 訓練後，可用 explainer.mab 取得 anchor 學習紀錄
-     * 計算 DFA intersection 可參考下列程式片段：
-       ```python
-       from dfa_operatopn import dfa_intersection, get_base_dfa, merge_linear_edges, merge_parallel_edges
+     * 訓練後，可用 explainer.mab 取得 anchor 學習紀錄，並計算 DFA intersection (可參考下列程式片段)
+      
+    ```python
+    # 1) 取數據
+   from my_loader import fetch_custom_dataset  # 你的通用載入器
+   b = fetch_custom_dataset(
+       source="data.csv",
+       mode="tabular",
+       target_col="label", # 假設你的 CSV 有一欄叫 "label" 當標籤
+       return_X_y=False
+   )
+   
+   X, y = b.data, b.target            # (N, M), (N,)
+   feature_names = b.feature_names     # list[str], 長度 M
+   category_map = b.category_map       # dict[int, list[str]]
+   
+   # 2) 建分類器（示例：LogisticRegression）
+   from sklearn.linear_model import LogisticRegression
+   clf = LogisticRegression(max_iter=1000).fit(X, y)
+   predict_fn = lambda arr: clf.predict(arr)    # arr shape = (N, M)
+   
+   # 3) AnchorTabular（依你的專案介面）
+   explainer = AnchorTabular(
+       predictor=predict_fn,
+       feature_names=feature_names,
+       categorical_names=categorical_names,
+   )
+   explainer.fit(data)
+   explanation = explainer.explain('Tabular', test_instance, ...) # anchor 類型可選 'Text', 'Tabular', 'Image'
+   
+   # 4) DFA intersection
+   from dfa_operatopn import dfa_intersection, get_base_dfa, merge_linear_edges, merge_parallel_edges
+   alphabet_map = {i: [0, 1, 2] for i in range(len(feature_names))}  # # 建立 dfa 的字母表映射 (依你的特徵型態調整)
+   sub_dfa = get_base_dfa(alphabet_map)
+   inter_dfa = dfa_intersection(explainer.mab.dfa, sub_dfa)
+   dfa = merge_parallel_edges(inter_dfa)
+   dfa = merge_linear_edges(dfa)
+   print("final dfa:", dfa)
+    ```
 
-        alphabet_map = {i: [0, 1, 2] for i in range(len(feature_names))}  # 依你的特徵型態調整
-        sub_dfa = get_base_dfa(alphabet_map)
-        inter_dfa = dfa_intersection(explainer.mab.dfa, sub_dfa)
-        dfa = merge_parallel_edges(inter_dfa)
-        dfa = merge_linear_edges(dfa)
-        print("final dfa:", dfa)
-       ```
 **範例參考**
 
 | 類型           | 範例檔案                      |
