@@ -179,41 +179,41 @@ python examples/RPNI/TestRobotTabularRPNI.py
      * 訓練後，可用 explainer.mab 取得 anchor 學習紀錄，並計算 DFA intersection (可參考下列程式片段)
       
     ```python
-    # 1) 取數據
-   from my_loader import fetch_custom_dataset  # 你的通用載入器
-   b = fetch_custom_dataset(
-       source="data.csv",
-       mode="tabular",
-       target_col="label", # 假設你的 CSV 有一欄叫 "label" 當標籤
-       return_X_y=False
-   )
-   
-   X, y = b.data, b.target            # (N, M), (N,)
-   feature_names = b.feature_names     # list[str], 長度 M
-   category_map = b.category_map       # dict[int, list[str]]
-   
-   # 2) 建分類器（示例：LogisticRegression）
-   from sklearn.linear_model import LogisticRegression
-   clf = LogisticRegression(max_iter=1000).fit(X, y)
-   predict_fn = lambda arr: clf.predict(arr)    # arr shape = (N, M)
-   
-   # 3) AnchorTabular（依你的專案介面）
-   explainer = AnchorTabular(
-       predictor=predict_fn,
-       feature_names=feature_names,
-       categorical_names=categorical_names,
-   )
-   explainer.fit(data)
-   explanation = explainer.explain('Tabular', test_instance, ...) # anchor 類型可選 'Text', 'Tabular', 'Image'
-   
-   # 4) DFA intersection
-   from dfa_operatopn import dfa_intersection, get_base_dfa, merge_linear_edges, merge_parallel_edges
-   alphabet_map = {i: [0, 1, 2] for i in range(len(feature_names))}  # # 建立 dfa 的字母表映射 (依你的特徵型態調整)
-   sub_dfa = get_base_dfa(alphabet_map)
-   inter_dfa = dfa_intersection(explainer.mab.dfa, sub_dfa)
-   dfa = merge_parallel_edges(inter_dfa)
-   dfa = merge_linear_edges(dfa)
-   print("final dfa:", dfa)
+       # 1) 取數據
+      from my_loader import fetch_custom_dataset  # 你的通用載入器
+      b = fetch_custom_dataset(
+          source="data.csv",
+          mode="tabular",
+          target_col="label", # 假設你的 CSV 有一欄叫 "label" 當標籤
+          return_X_y=False
+      )
+      
+      X, y = b.data, b.target            # (N, M), (N,)
+      feature_names = b.feature_names     # list[str], 長度 M
+      category_map = b.category_map       # dict[int, list[str]]
+      
+      # 2) 建分類器（示例：LogisticRegression）
+      from sklearn.linear_model import LogisticRegression
+      clf = LogisticRegression(max_iter=1000).fit(X, y)
+      predict_fn = lambda arr: clf.predict(arr)    # arr shape = (N, M)
+      
+      # 3) AnchorTabular（依你的專案介面）
+      explainer = AnchorTabular(
+          predictor=predict_fn,
+          feature_names=feature_names,
+          categorical_names=categorical_names,
+      )
+      explainer.fit(data)
+      explanation = explainer.explain('Tabular', test_instance, ...) # anchor 類型可選 'Text', 'Tabular', 'Image'
+      
+      # 4) DFA intersection
+      from dfa_operatopn import dfa_intersection, get_base_dfa, merge_linear_edges, merge_parallel_edges
+      alphabet_map = {i: [0, 1, 2] for i in range(len(feature_names))}  # # 建立 dfa 的字母表映射 (依你的特徵型態調整)
+      sub_dfa = get_base_dfa(alphabet_map)
+      inter_dfa = dfa_intersection(explainer.mab.dfa, sub_dfa)
+      dfa = merge_parallel_edges(inter_dfa)
+      dfa = merge_linear_edges(dfa)
+      print("final dfa:", dfa)
     ```
 
 **範例參考**
