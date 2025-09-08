@@ -166,8 +166,10 @@ python examples/RPNI/TestRobotTabularRPNI.py
        * feature_names：欄位名稱（list，長度為 M）
        * category_map：每個類別型欄位的所有可能值 (dict：key=欄位 index，value=此欄所有類別的 list)
   2. **建立分類器**
-     * 你可以用任何 scikit-learn 類模型，或自定義規則 function
-     * 必須提供 predict_fn = lambda x: model.predict(x)（確保 shape=(N, M)），或自定義 function，輸入 2D array，回傳 label list
+     * 你可以用任何 scikit-learn 類模型，或自定義規則 predict_fn
+     * predict_fn
+        * 輸入：numpy.ndarray，shape (N, M)
+        * 輸出：numpy.ndarray，shape (N, )，內容為整數類別（0…K-1）或二元 {0,1}
   3. **AnchorTabular 解釋流程**
      * 參考 TestTabularBinary.py、TestTextRPNI.py 的寫法
      * 將你的 data、feature_names、category_map、predict_fn 帶入 AnchorTabular，以製作 explainer
