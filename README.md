@@ -72,7 +72,7 @@ python examples/RPNI/TestRobotTabularRPNI.py
 
 ## 自定義模型
 
-依資料類型，請把原始資料整理成以下格式，以供 fetch_xxx 讀取
+**依資料類型，請把原始資料整理成以下格式，以供 fetch_xxx 讀取**
 
 1. **Tabular（表格）**
    * 檔案：CSV（UTF-8），首列為欄名。
@@ -121,7 +121,7 @@ python examples/RPNI/TestRobotTabularRPNI.py
       * 其他依 dataset 而定（例如：int_to_str_labels、mean_channels）
    ```
 
-**以下為可擴充的 fetch_custom_dataset 範例，可依資料類型進行修改，輸出格式一致即可 :**
+以下為可擴充的 fetch_custom_dataset 範例，可依資料類型進行修改，輸出格式一致即可 :
 
    ```bash
    def fetch_custom_dataset(
@@ -143,7 +143,7 @@ python examples/RPNI/TestRobotTabularRPNI.py
        # 可參考 fetch_adult / fetch_movie_sentiment / load_cats 的實作
    ```
 
-   **使用範例**
+   使用範例
    ```bash
    # 1. Tabular
    X, y = fetch_custom_dataset("data.csv", mode="tabular", target_col="label", return_X_y=True)
