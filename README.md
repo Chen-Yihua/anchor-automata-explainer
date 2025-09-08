@@ -78,7 +78,7 @@ python examples/RPNI/TestRobotTabularRPNI.py
    * 檔案：CSV（UTF-8），首列為欄名。
    * 欄位：
       * 其中一欄是 標籤（分類：文字或整數皆可；回函式中會轉成 0…K-1）。
-      * 其他欄為 特徵；若有類別型特徵，保持原文字（函式內會 LabelEncoder，並在 category_map 留對應）。
+      * 其他欄為 特徵；若有類別型特徵，保持原文字（函式內會 LabelEncoder，並將對應寫入 category_map（key = 欄位 index, value = 類別字串列表））。
    * 缺值：建議以空字串或 ?；我們會在函式內處理（例如轉成眾數/特定符號），類似 fetch_adult 的做法。
    * 檔案擺放：
       * 單檔：data.csv
@@ -159,13 +159,12 @@ X, y = fetch_custom_dataset("dataset", mode="image", target_size=(224, 224), ret
 **以 tabular 為例，解釋自定義預測模型並產生 DFA：**
 
   1. **準備 Tabular 資料**
-     * 可用 DataFrame 或 numpy array
-     * 特徵可含類別型、數值型，建議每個類別型欄位用 LabelEncoder/OneHotEncoder 轉成數值
+     * 可用 DataFrame 或 numpy array，特徵可含類別型、數值型
      * Tabular 資料須包含以下物件：
-       * data（N, M array）
-       * target（N, 1 array）
+       * data ((N, M) array)
+       * target ((N,) 1-D array)
        * feature_names：欄位名稱（list，長度為 M）
-       * category_map：每個類別型欄位的所有可能值（dict，key=col idx，value=此欄所有類別的 list）
+       * category_map：每個類別型欄位的所有可能值 (dict：key=欄位 index，value=此欄所有類別的 list)
   2. **建立分類器**
      * 你可以用任何 scikit-learn 類模型，或自定義規則 function
      * 必須提供 predict_fn = lambda x: model.predict(x)（確保 shape=(N, M)），或自定義 function，輸入 2D array，回傳 label list
