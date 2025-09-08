@@ -72,7 +72,7 @@ python examples/RPNI/TestRobotTabularRPNI.py
 
 ## 自定義模型
 
-**依資料類型，請把原始資料整理成以下格式，以供 fetch_xxx 讀取**
+**依資料類型，請把原始資料整理成以下格式，放入 dataset 資料夾，以供 fetch_xxx 讀取**
 
 1. **Tabular（表格）**
    * 檔案：CSV（UTF-8），首列為欄名。
@@ -115,7 +115,7 @@ python examples/RPNI/TestRobotTabularRPNI.py
    → 回傳 Bunch 物件，包含：
       * data：二值化後特徵
       * target：標籤
-      * feature_names（tabular 用）
+      * feature_names（只有 tabular 具有此欄）
       * target_names（分類標籤名稱）
       * category_map（類別特徵的對應表）
       * 其他依 dataset 而定（例如：int_to_str_labels、mean_channels）
@@ -146,21 +146,22 @@ python examples/RPNI/TestRobotTabularRPNI.py
    使用範例
    ```bash
    # 1. Tabular
-   X, y = fetch_custom_dataset("data.csv", mode="tabular", target_col="label", return_X_y=True)
+   X, y = fetch_custom_dataset("data.csv", mode="tabular", target_col="label", return_X_y=False)
    
    # 2. Text
    bunch = fetch_custom_dataset("reviews.csv", mode="text")
    print(bunch.data[:3], bunch.target[:3])
    
    # 3. Image
-   X, y = fetch_custom_dataset("dataset", mode="image", target_size=(224, 224), return_X_y=True)
+   X, y = fetch_custom_dataset("dataset", mode="image", target_size=(224, 224), return_X_y=False)
    ```
 
 **以 tabular 為例，解釋自定義模型並產生 DFA：**
 
   1. **準備 Tabular 資料**
      * 可用 DataFrame 或 numpy array，特徵可含類別型、數值型
-     * Tabular 資料須包含以下物件：
+     * 呼叫 fetch_custom_dataset，以整理資料
+     * 整理完的 Tabular 資料包含以下物件：
        * data ((N, M) array)
        * target ((N,) 1-D array)
        * feature_names：欄位名稱（list，長度為 M）
@@ -171,8 +172,7 @@ python examples/RPNI/TestRobotTabularRPNI.py
         * 輸入：numpy.ndarray，shape (N, M)，如果輸入是整數索引，要先轉型，np.atleast_2d(X).astype(int) 
         * 輸出：numpy.ndarray，shape (N, )，內容為整數類別（0…K-1）或二元 {0,1}
   3. **AnchorTabular 解釋流程**
-     * 參考 TestTabularBinary.py、TestTextRPNI.py 的寫法
-     * 將你的 data、feature_names、category_map、predict_fn 帶入 AnchorTabular，以製作 explainer
+     * 將 data、feature_names、category_map、predict_fn 帶入 AnchorTabular，以製作 explainer
      * explainer.fit(data) 後，直接呼叫：
        ```python
        explanation = explainer.explain('Tabular', test_instance, ...) # anchor 類型可選 'Text', 'Tabular', 'Image'
@@ -182,9 +182,9 @@ python examples/RPNI/TestRobotTabularRPNI.py
       
     ```python
        # 1) 取數據
-      from my_loader import fetch_custom_dataset  # 你的通用載入器
+      from dataset_loader import fetch_custom_dataset  # 通用載入器
       b = fetch_custom_dataset(
-          source="data.csv",
+          source="dataset/data.csv",
           mode="tabular",
           target_col="label", # 假設你的 CSV 有一欄叫 "label" 當標籤
           return_X_y=False
@@ -222,10 +222,10 @@ python examples/RPNI/TestRobotTabularRPNI.py
 
 | 類型           | 範例檔案                      |
 | ------------ | ------------------------- |
-| Tabular      | `TestTabularBinary.py`    |
-| Tabular（自訂）  | `TestRobotTabularRPNI.py` |
-| Text         | `TestTextRPNI.py`         |
-| Image        | `TestImageRPNI.py`        |
+| Tabular      | `TabularBinary.py`    |
+| Tabular（自訂）  | `CustomTabularRPNI.py` |
+| Text         | `TextRPNI.py`         |
+| Image        | `ImageRPNI.py`        |
 * 建議複製上述檔案結構，調整資料/模型部分即可
 
 ---
