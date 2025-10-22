@@ -16,6 +16,11 @@ env/
 build/
 site-packages/
 
+test result/
+external_modules/
+modified_packages/
+pickle/
+
 # OS
 .DS_Store
 Thumbs.db
