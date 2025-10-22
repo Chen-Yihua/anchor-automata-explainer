@@ -1,6 +1,6 @@
 import numpy as np
 from typing import Optional, Tuple, Union
-from alibi.utils.data import Bunch
+from modified_modules.alibi.utils.data import Bunch
 
 class RobotPredictor:
     def __init__(self, alphabets=None):

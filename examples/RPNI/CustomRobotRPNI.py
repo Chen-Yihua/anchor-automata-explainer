@@ -1,17 +1,19 @@
 import sys, os
 sys.path.insert(0, './src')
+sys.path.insert(0, os.path.abspath('.'))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../external_modules/Explaining-FA')))
 
 from tee import Tee
 import numpy as np
 import pickle
-from alibi.explainers import AnchorTabular
+from modified_modules.alibi.explainers import AnchorTabular
+
+from dataset_loader import fetch_custom_dataset  # 通用載入器
 from robot_operation import robot_instance
 from automaton.dfa_operatopn import get_base_dfa, simplify_dfa, dfa_intersection_any, merge_linear_edges, merge_parallel_edges
-from dataset_loader import fetch_custom_dataset  # 通用載入器
-from language.explain import Language
 from automaton.utils import dfa_to_mata, explain_axp_cxp, get_test_word
 from automaton.learner import AUTO_INSTANCE
+from language.explain import Language
 
 # 載入資料
 b = fetch_custom_dataset(

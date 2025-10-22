@@ -1,6 +1,7 @@
 import sys, os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../external_modules/Explaining-FA')))
 sys.path.insert(0, os.path.abspath('./src'))
+sys.path.insert(0, os.path.abspath('.'))
 from tee import Tee
 import spacy
 from spacy.tokenizer import Tokenizer
@@ -9,15 +10,14 @@ import numpy as np
 import pickle
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
-from alibi.explainers import AnchorText
-from alibi.utils import spacy_model
-from automaton.dfa_operatopn import get_base_dfa, simplify_dfa, dfa_intersection_any
+from modified_modules.alibi.explainers import AnchorText
+
 from dataset_loader import fetch_custom_dataset
+from automaton.dfa_operatopn import get_base_dfa, simplify_dfa, dfa_intersection_any
 from automaton.utils import dfa_to_mata, explain_axp_cxp, get_test_word
-from language.explain import Language
 from automaton.learner import AUTO_INSTANCE
+from language.explain import Language
 
 np.random.seed(0)
 
