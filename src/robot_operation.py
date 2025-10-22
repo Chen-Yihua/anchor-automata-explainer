@@ -5,8 +5,8 @@ from alibi.utils.data import Bunch
 class RobotPredictor:
     def __init__(self, alphabets=None):
         self.alphabet = alphabets if alphabets else ['yellow', 'blue', 'green']
-        self.learned_positives = []
-        self.learned_negatives = []
+        # self.learned_positives = []
+        # self.learned_negatives = []
         self.unpredictable_count  = 0  # 用於計算無法預測 (預測結果非唯一) 的樣本數量
         self.coverage_data = None  # 用於存儲 coverage data (初始抽樣樣本)
 
@@ -83,12 +83,12 @@ class RobotPredictor:
                         # 中間沒 green，違反規則
                         valid = False
                         break
-        if valid:
-            if tuple(seq) not in self.learned_positives:
-                self.learned_positives.append(tuple(seq))
-        else:
-            if tuple(seq) not in self.learned_negatives:
-                self.learned_negatives.append(tuple(seq))
+        # if valid:
+        #     if tuple(seq) not in self.learned_positives:
+        #         self.learned_positives.append(tuple(seq))
+        # else:
+        #     if tuple(seq) not in self.learned_negatives:
+        #         self.learned_negatives.append(tuple(seq))
 
         return int(valid)
     
