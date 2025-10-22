@@ -16,7 +16,7 @@ env/
 build/
 site-packages/
 
-test result/
+test_result/
 external_modules/
 modified_packages/
 pickle/
