@@ -11,7 +11,7 @@ from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import OneHotEncoder
 from alibi.explainers import AnchorTabular
 from alibi.datasets import fetch_adult
-from dfa_operatopn import dfa_intersection, get_base_dfa, merge_linear_edges, merge_parallel_edges
+from automaton.dfa_operatopn import get_base_dfa, simplify_dfa, dfa_intersection_any
 
 np.random.seed(0)
 
@@ -103,12 +103,20 @@ for i in ordinal_features:
     elif col + "_pos" in df.columns: # 二值化的數值特徵
         categorical_names[i] = [0, 1]
 
-explainer = AnchorTabular(predict_fn, feature_names, categorical_names=categorical_names, seed=1)
+explainer = AnchorTabular(
+    predict_fn, 
+    feature_names, 
+    categorical_names=categorical_names, 
+    seed=1
+)
 explainer.fit(X_train, disc_perc=[25, 50, 75])
 explainer.samplers[0].d_train_data = X_train # 設定 d_train_data 為原始訓練資料
 
 # 解釋 tabular
-idx = 2 # 2nd row of the test set
+test_instance = X_test[2]
+
+# explainer 參數
+learn_type = 'Tabular'
 coverage_samples = 1000
 batch_size = 50
 n_covered_ex = 1000
@@ -116,32 +124,44 @@ min_samples_start = 30
 threshold = 0.95
 
 with open("TestTabularRPNI.txt", "w", encoding="utf-8") as log_file:
-    sys.stdout = Tee(sys.stdout, log_file) # 同時輸出到終端和檔案
+    sys.stdout = Tee(sys.stdout, log_file)
 
-    print("Tabular: %s" % X_test[idx])
+    print("Tabular: %s" % test_instance)
     print("Prediction: < 50 k")
-    explanation = explainer.explain('Tabular', X_test[idx], coverage_samples=coverage_samples, batch_size=batch_size, n_covered_ex=n_covered_ex, min_samples_start=min_samples_start, threshold=threshold, beam_size=1)
-    
-    # 印出 anchor 結果
+    explanation = explainer.explain(
+        learn_type, 
+        test_instance, 
+        coverage_samples=coverage_samples, 
+        batch_size=batch_size, 
+        n_covered_ex=n_covered_ex, 
+        min_samples_start=min_samples_start, 
+        threshold=threshold, 
+        beam_size=1
+    )
+
+    # Anchor 結果
     print('Anchor: %s' % (' AND '.join(explanation.anchor)))
-    # print('Anchor Precision: %.4f' % explanation.precision)
-    # print('Anchor Coverage: %.4f' % explanation.coverage)
     mab = explainer.mab # 取出學習紀錄
 
     # 計算 DFA Intersection
     alphabet_map = {} # 建立 dfa 的字母表映射
+    features = explanation.raw['feature'] # anchor 值
+
     for i in mab.sample_fcn.feature_values:
         if i not in alphabet_map:
             alphabet_map[i] = []
         for j in range(len(mab.sample_fcn.feature_values[i])):
             alphabet_map[i].append(j)
 
-    sub_dfa = get_base_dfa(alphabet_map) # 子 dfa
+    sub_dfa = get_base_dfa(learn_type, alphabet_map, features, test_instance)  # 子 dfa
     print("sub dfa:", sub_dfa)
-    inter_dfa = dfa_intersection(mab.dfa, sub_dfa)
+
+    inter_dfa = dfa_intersection_any(mab.dfa, sub_dfa) # 交集
+    inter_dfa.make_input_complete()
+    inter_dfa.minimize()
     print("intersection dfa:", inter_dfa)
-    dfa = merge_parallel_edges(inter_dfa)
-    dfa = merge_linear_edges(dfa)
+
+    dfa = simplify_dfa(inter_dfa, learn_type)
     print("final dfa:", dfa)
 
     sys.stdout = sys.__stdout__ # 恢復 stdout

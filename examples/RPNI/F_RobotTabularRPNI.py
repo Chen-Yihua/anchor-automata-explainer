@@ -8,7 +8,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from robot_operation import robot_instance
-from dfa_operatopn import dfa_intersection, get_base_dfa, merge_linear_edges, merge_parallel_edges
+from automaton.dfa_operatopn import dfa_intersection, get_base_dfa, merge_linear_edges, merge_parallel_edges
 
 def robot_predict_fn(X):
     color_map = {0: 'green', 1: 'yellow', 2: 'blue'}

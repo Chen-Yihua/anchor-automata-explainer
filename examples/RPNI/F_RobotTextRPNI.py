@@ -5,7 +5,7 @@ import spacy
 from alibi.explainers import AnchorText
 from alibi.utils import spacy_model
 from robot_operation import robot_instance
-from dfa_operatopn import dfa_intersection, get_base_dfa, merge_parallel_edges, merge_linear_edges
+from automaton.dfa_operatopn import dfa_intersection, get_base_dfa, merge_parallel_edges, merge_linear_edges
 
 # 進行預測
 predict_fn = lambda x: robot_instance.robot_predict_fn(x)
