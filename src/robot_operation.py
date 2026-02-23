@@ -83,12 +83,8 @@ class RobotPredictor:
                         # 中間沒 green，違反規則
                         valid = False
                         break
-        # if valid:
-        #     if tuple(seq) not in self.learned_positives:
-        #         self.learned_positives.append(tuple(seq))
-        # else:
-        #     if tuple(seq) not in self.learned_negatives:
-        #         self.learned_negatives.append(tuple(seq))
+            if not valid:
+                break
 
         return int(valid)
     
