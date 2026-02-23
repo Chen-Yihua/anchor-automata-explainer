@@ -209,7 +209,7 @@ python examples/RPNI/TestRobotTabularRPNI.py
       explanation = explainer.explain('Tabular', test_instance, ...) # anchor 類型可選 'Text', 'Tabular', 'Image'
       
       # 4) DFA intersection
-      from dfa_operatopn import dfa_intersection, get_base_dfa, merge_linear_edges, merge_parallel_edges
+      from dfa_operation import dfa_intersection, get_base_dfa, merge_linear_edges, merge_parallel_edges
       alphabet_map = {i: [0, 1, 2] for i in range(len(feature_names))}  # # 建立 dfa 的字母表映射 (依你的特徵型態調整)
       sub_dfa = get_base_dfa(alphabet_map)
       inter_dfa = dfa_intersection(explainer.mab.dfa, sub_dfa)
