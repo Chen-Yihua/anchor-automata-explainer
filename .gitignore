@@ -18,7 +18,7 @@ site-packages/
 
 test_result/
 external_modules/
-modified_packages/
+# modified_packages/
 pickle/
 
 # OS
