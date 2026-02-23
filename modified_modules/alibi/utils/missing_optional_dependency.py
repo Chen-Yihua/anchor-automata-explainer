@@ -36,7 +36,8 @@ ERROR_TYPES = {
     'torch': 'torch',
     'pytorch': 'torch',
     'shap': 'shap',
-    'numba': 'shap'
+    'numba': 'shap',
+    'distributed': 'distributed',
 }
 
 
@@ -114,6 +115,7 @@ def import_optional(module_name: str, names: Optional[List[str]] = None) -> Any:
             raise err
         name, *_ = err.name.split('.')
         if name not in ERROR_TYPES:
+            print(f"[import_optional debug] ImportError for module_name='{module_name}', err.name='{err.name}', not in ERROR_TYPES.\nERROR_TYPES={ERROR_TYPES}")
             raise err
         missing_dependency = ERROR_TYPES[name]
         if names is not None:

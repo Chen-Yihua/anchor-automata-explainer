@@ -16,7 +16,7 @@ from modified_modules.alibi.api.interfaces import Explainer, Explanation
 from modified_modules.alibi.explainers import plot_pd
 from modified_modules.alibi.explainers.partial_dependence import (Kind, PartialDependence,
                                                  TreePartialDependence)
-from modified_modules.alibi.utils import _get_options_string
+
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +151,7 @@ class PartialDependenceVariance(Explainer):
                 https://docs.seldon.io/projects/alibi/en/stable/methods/PartialDependenceVariance.html
         """
         if method not in Method.__members__.values():
+            from modified_modules.alibi.utils import _get_options_string
             raise ValueError(f"Unknown method. Received ``method={method}``. "
                              f"Accepted `method` names are: {_get_options_string(Method)}")
 

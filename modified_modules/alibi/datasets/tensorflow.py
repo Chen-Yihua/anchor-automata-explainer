@@ -3,8 +3,7 @@ from typing import Tuple, Union
 import tensorflow.keras as keras
 import numpy as np
 
-from modified_modules.utils.data import Bunch
-
+from modified_modules.alibi.utils.data import Bunch
 
 def fetch_fashion_mnist(return_X_y: bool = False
                         ) -> Union[Bunch, Tuple[np.ndarray, np.ndarray]]:

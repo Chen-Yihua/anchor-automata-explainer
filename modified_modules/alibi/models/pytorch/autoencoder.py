@@ -7,7 +7,7 @@ output.
 import torch
 import torch.nn as nn
 
-from modified_modules.models.pytorch.model import Model
+from modified_modules.alibi.models.pytorch.model import Model
 from typing import List, Union
 
 

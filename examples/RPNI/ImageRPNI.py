@@ -4,8 +4,8 @@ from tee import Tee
 import tensorflow as tf
 import numpy as np
 from alibi.explainers import AnchorImage
-from automaton.dfa_operatopn import dfa_intersection, get_base_dfa, merge_parallel_edges, merge_linear_edges
-from dataset_loader import fetch_custom_dataset
+from learner.dfa_learner import dfa_intersection, get_base_dfa, merge_parallel_edges, merge_linear_edges
+from data.dataset_loader import fetch_custom_dataset
 
 np.random.seed(0)
 tf.random.set_seed(0)

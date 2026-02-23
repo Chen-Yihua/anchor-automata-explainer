@@ -221,9 +221,14 @@ class UnknownSampler(AnchorTextSampler):
         raw[:] = self.words
 
         for i, t in enumerate(self.words):
-            # do not perturb words that are in anchor
-            if i in anchor:
+            # Skip punctuation - don't perturb it (standard NLP practice)
+            import string
+            if all(c in string.punctuation for c in t):
                 continue
+            
+            # do not perturb words that are in anchor
+            # if i in anchor:
+                # continue
 
             # sample the words in the text outside of the anchor that are replaced with UNKs
             n_changed = np.random.binomial(num_samples, self.perturb_opts['sample_proba'])
@@ -502,12 +507,9 @@ class ShapTextSampler(AnchorTextSampler):
         # SHAP 值轉換為機率 (越大越高機率被遮蔽)
         shap_abs = np.abs(self.shap_values)
         perturb_proba = shap_abs / (shap_abs.sum() + 1e-6)
-        # perturb_scores = shap_abs.max() - shap_abs  # shap 小 → 高擾動機率
-        # perturb_proba = perturb_scores / (perturb_scores.sum() + 1e-6)
 
         # 排序 shap 值
         sorted_idx = np.argsort(-np.abs(self.shap_values))
-        # sorted_idx = np.argsort(-perturb_proba)
 
         for j in range(num_samples):
             max_mask = max(1, int(0.2 * n_tokens))
@@ -622,3 +624,136 @@ class ShapTabularSampler:
                         raw[j, i] = np.random.choice(np.unique(self.train_data[:, i]))
                     data[j, i] = 0
         return raw, data
+
+
+import random
+import numpy as np
+from copy import deepcopy
+
+class EditDistanceTextSampler:
+    """
+    Edit-distance based perturbation sampler for AnchorText.
+    Similar to TabularSampler logic, but applied to text tokens.
+
+    Operations: substitute / insert / delete
+    Anchor tokens will NOT be modified.
+    """
+
+    def __init__(self, words, seed=0, edit_dist=1, vocab=None):
+        """
+        Args:
+            words: tokenized original sentence (list[str])
+            edit_dist: radius of edit operations
+            vocab: optional vocabulary for insertion/substitution; 
+                   defaults to unique tokens in sentence
+        """
+        random.seed(seed)
+        np.random.seed(seed)
+
+        self.words = words
+        self.edit_dist = edit_dist
+        self.vocab = vocab if vocab else list(set(words))
+
+    def set_text(self, text):
+        """Update the text to be perturbed."""
+        self.words = text.split()
+        # Update vocab if it was empty and now we have words
+        if not self.vocab and self.words:
+            self.vocab = list(set(self.words))
+
+    def perturb_once(self, anchor_positions=None):
+        """
+        Create ONE perturbed text based on edit distance operations.
+        
+        Parameters:
+            anchor_positions: set of positions NOT to modify. If None, any position can be modified.
+        """
+        if anchor_positions is None:
+            anchor_positions = set()  # No protected positions
+        
+        # Safety check: if vocab is empty, don't perturb
+        if not self.vocab or not self.words:
+            return self.words.copy(), [0] * len(self.words)
+            
+        new_words = deepcopy(self.words)
+        
+        # mask: track which positions were modified (always matches new_words length)
+        mask = [0] * len(new_words)
+
+        for _ in range(self.edit_dist):
+            # Safety check in loop
+            if not new_words:
+                break
+                
+            # Select valid operations based on vocab availability and word count
+            valid_ops = ["substitute"]
+            if self.vocab:
+                valid_ops.append("insert")
+            # Allow delete only if we have >1 words to avoid reducing to empty
+            if len(new_words) > 1:
+                valid_ops.append("delete")
+            
+            # If no valid ops available, skip
+            if not valid_ops:
+                break
+            
+            op = random.choice(valid_ops)
+
+            # select position not in anchor (or any position if no anchor)
+            if anchor_positions:
+                valid_positions = [i for i in range(len(new_words)) if i not in anchor_positions]
+            else:
+                valid_positions = list(range(len(new_words)))
+
+            if len(valid_positions) == 0:
+                break
+
+            pos = random.choice(valid_positions)
+
+            # ==== EDIT OPS ====
+
+            # Substitute
+            # if op == "substitute":
+            new_word = random.choice(self.vocab)
+            new_words[pos] = new_word
+            mask[pos] = 1
+
+            # # Insert
+            # elif op == "insert":
+            #     new_word = random.choice(self.vocab)
+            #     new_words.insert(pos, new_word)
+            #     mask.insert(pos, 1)
+
+            # # Delete
+            # elif op == "delete":
+            #     del new_words[pos]
+            #     del mask[pos]
+
+        return new_words, mask
+
+    def __call__(self, anchor=None, num_samples=100):
+        """
+        Generate (raw_texts, masks).
+        
+        Parameters:
+            anchor: tuple (indices, positions) for anchor-based perturbation. 
+                   If None, random perturbation without anchor constraints.
+            num_samples: number of samples to generate
+        """
+        if anchor is None:
+            # No anchor - pure random perturbation
+            anchor_positions = None
+        else:
+            # Anchor-based perturbation
+            _, anchor_tokens = anchor
+            anchor_positions = set(anchor_tokens)
+
+        raw_texts = []
+        masks = []
+
+        for _ in range(num_samples):
+            pert, mask = self.perturb_once(anchor_positions)
+            raw_texts.append(" ".join(pert))
+            masks.append(mask)
+
+        return np.array(raw_texts, dtype=object), np.array(masks, dtype=object)

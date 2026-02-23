@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from typing import List
-from modified_modules.models.pytorch.model import Model
+from modified_modules.alibi.models.pytorch.model import Model
 
 
 class MNISTClassifier(Model):

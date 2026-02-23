@@ -14,7 +14,7 @@ from modified_modules.alibi.api.defaults import DEFAULT_DATA_SIM, DEFAULT_META_S
 from modified_modules.alibi.api.interfaces import Explainer, Explanation
 from modified_modules.alibi.explainers.similarity.base import BaseSimilarityExplainer
 from modified_modules.alibi.explainers.similarity.metrics import asym_dot, cos, dot
-from modified_modules.alibi.utils import _get_options_string
+
 from modified_modules.alibi.utils.frameworks import Framework
 from typing_extensions import Literal
 
@@ -111,11 +111,13 @@ class GradientSimilarity(BaseSimilarityExplainer):
         resolved_sim_fn = sim_fn_opts[sim_fn]
 
         if task not in Task.__members__.values():
+            from modified_modules.alibi.utils import _get_options_string
             raise ValueError(f"Unknown task {task}. Consider using: {_get_options_string(Task)}.")
 
         self.task = task
 
         if backend not in Framework.__members__.values():
+            from modified_modules.alibi.utils import _get_options_string
             raise ValueError(f"Unknown backend {backend}. Consider using: {_get_options_string(Framework)}.")
 
         super().__init__(predictor, loss_fn, resolved_sim_fn, precompute_grads, Framework(backend), device=device,

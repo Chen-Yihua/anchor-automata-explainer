@@ -1,4 +1,4 @@
-from modified_modules.utils.missing_optional_dependency import import_optional
+from ...utils.missing_optional_dependency import import_optional
 
 ADULTEncoder, ADULTDecoder, MNISTEncoder, MNISTDecoder, MNISTClassifier = import_optional(
     'alibi.models.pytorch.cfrl_models',

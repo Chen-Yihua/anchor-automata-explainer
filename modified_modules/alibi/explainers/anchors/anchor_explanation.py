@@ -71,13 +71,14 @@ class AnchorExplanation:
         precision
             Anchor precision.
         """
-        precision = self.exp_map['precision']
-        if len(precision) == 0:
-            return self.exp_map['all_precision']
+        training_precision = self.exp_map['training_precision']
+        testing_precision = self.exp_map['testing_precision']
+        # if len(precision) == 0:
+        #     return self.exp_map['all_precision']
         if partial_index is not None:
-            return precision[partial_index]
+            return training_precision[partial_index], testing_precision[partial_index]
         else:
-            return precision[-1]
+            return training_precision[-1], testing_precision[-1]
 
     def coverage(self, partial_index: Optional[int] = None) -> float:
         """

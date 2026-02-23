@@ -11,7 +11,7 @@ from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import OneHotEncoder
 from alibi.explainers import AnchorTabular
 from alibi.datasets import fetch_adult
-from automaton.dfa_operatopn import get_base_dfa, simplify_dfa, dfa_intersection_any
+from automaton.dfa_operation import get_base_dfa, simplify_dfa, dfa_intersection_any
 
 np.random.seed(0)
 

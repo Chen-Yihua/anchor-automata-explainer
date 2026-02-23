@@ -8,7 +8,7 @@ from typing import List, Dict
 import torch
 import torch.nn.functional as F
 
-from modified_modules.explainers.backends.cfrl_tabular import split_ohe, generate_condition  # noqa: F401
+from ....explainers.backends.cfrl_tabular import split_ohe, generate_condition  # noqa: F401
 
 # The following methods are included since `alibi.explainers.backends.pytorch.cfrl_tabular` is an extension to the
 # `alibi.explainers.backends.pytorch.cfrl_base.py`. In the explainer class `alibi.explainers.cfrl_tabular` the
@@ -16,7 +16,7 @@ from modified_modules.explainers.backends.cfrl_tabular import split_ohe, generat
 # some of the methods imported below are common for both data modalities and are access through `self.backend`
 # we import them here, without being used explicitly in this module.
 
-from modified_modules.explainers.backends.pytorch.cfrl_base import get_actor, get_critic, get_optimizer, data_generator, \
+from ....explainers.backends.pytorch.cfrl_base import get_actor, get_critic, get_optimizer, data_generator, \
     encode, decode, generate_cf, update_actor_critic, add_noise, to_numpy, to_tensor, set_seed, \
     save_model, load_model  # noqa: F403, F401
 

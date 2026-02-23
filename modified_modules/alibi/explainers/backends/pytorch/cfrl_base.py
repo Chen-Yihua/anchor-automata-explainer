@@ -14,11 +14,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from modified_modules.explainers.backends.cfrl_base import CounterfactualRLDataset
-from modified_modules.models.pytorch.actor_critic import Actor, Critic
+from ..cfrl_base import CounterfactualRLDataset
+from ....models.pytorch.actor_critic import Actor, Critic
 
 if TYPE_CHECKING:
-    from modified_modules.explainers.cfrl_base import NormalActionNoise
+    from ..cfrl_base import NormalActionNoise
 
 
 class PtCounterfactualRLDataset(CounterfactualRLDataset, Dataset):

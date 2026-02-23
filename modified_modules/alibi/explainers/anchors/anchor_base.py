@@ -1,42 +1,52 @@
-import copy
+# import copy
+# import itertools
 import logging
 from collections import defaultdict, namedtuple
+# import random
+import random
 from typing import Callable, Dict, List, Optional, Set, Tuple
-
 import numpy as np
+from datasets.og_loader import OGD2
+from learner.dfa_learner import make_dfa_complete, trim_dfa
+from automaton.utils import plot_dfa_beam_stats
 from modified_modules.alibi.utils.distributions import kl_bernoulli
-from automaton.learner import AUTO_INSTANCE
+from learner import AUTO_INSTANCE
 
 logger = logging.getLogger(__name__)
-
 
 # TODO: Discuss logging strategy
 
 class AnchorBaseBeam:
 
-    def __init__(self, samplers: List[Callable], **kwargs) -> None:
+    def __init__(self, samplers: List[Callable], dfas=None, predictor=None, **kwargs) -> None:
         """
         Parameters
         ---------
         samplers
             Objects that can be called with args (`result`, `n_samples`) tuple to draw samples.
         """
+        self.samplers = samplers
+        if isinstance(samplers, list) and len(samplers) > 1:
+            self.sample_fcn = samplers
+        else:
+            self.sample_fcn = samplers[0] if isinstance(samplers, list) else samplers
 
-        self.sample_fcn = samplers[0]
-        self.samplers: Optional[List[Callable]] = None
         # Initial size (in batches) of data/raw data samples cache.
         self.sample_cache_size = kwargs.get('sample_cache_size', 1000)
+
         # when only the max of self.margin or batch size remain emptpy, the cache is
         # extended to accommodate an additional sample_cache_size batches.
         self.margin = kwargs.get('cache_margin', 100)
 
-        self.dfa = None  # 儲存 DFA
         self.type = ''
-        self.testing_data = None # 測試樣本
+        self.testing_data = []
+        self.dfas = dfas or []
+        self.predictor = predictor
+        self.iteration = 0
 
-    def _init_state(self, batch_size: int, coverage_data: np.ndarray, raw_cov_example) -> None:
+    def _init_state(self, batch_size: int) -> None:
         """
-        Initialises the object state, which is used to compute result precisions & precision bounds
+        Initialises the object state, which is used to compute result accuracies & accuracy bounds
         and provide metadata for explanation objects.
 
         Parameters
@@ -48,6 +58,9 @@ class AnchorBaseBeam:
         """
 
         prealloc_size = batch_size * self.sample_cache_size
+        # Initialize data as a list to support variable-length sequences
+        data_init = []
+        
         # t_ indicates that the attribute is a dictionary with entries for each anchor
         self.state: dict = {
             't_coverage': defaultdict(lambda: 0.),  # anchors' coverage
@@ -56,17 +69,18 @@ class AnchorBaseBeam:
             't_covered_false': defaultdict(None),  # samples with dif pred to instance where t_ applies
             't_idx': defaultdict(set),  # row idx in sample cache where the anchors apply
             't_nsamples': defaultdict(lambda: 0.),  # total number of samples drawn for the anchors
+            't_accepted': defaultdict(lambda: 0.),  # total number of samples drawn for the accepted traces of dfa
             't_order': defaultdict(list),  # anchors are sorted to avoid exploring permutations
             # this is the order in which anchors were found
             't_positives': defaultdict(lambda: 0.),  # nb of samples where result pred = pred on instance
+            't_negatives': defaultdict(lambda: 0.),
             'prealloc_size': prealloc_size,  # samples caches size
-            'data': np.zeros((prealloc_size, coverage_data.shape[1]), coverage_data.dtype),  # samples caches
+            'data': data_init,  # samples caches (list for variable-length support)
             'labels': np.zeros(prealloc_size, ),  # clf pred labels on raw_data
             'current_idx': 0,
-            'n_features': coverage_data.shape[1],  # data set dim after encoding
-            'coverage_data': coverage_data,  # coverage data
-            'coverage_raw': None,  # raw coverage data
-            'coverage_label': None,  # coverage label
+            # 'coverage_data': coverage_data,  # coverage data
+            # 'coverage_raw': raw_cov_data,  # raw coverage data
+            # 'coverage_label': coverage_label,  # coverage label
         }
         self.state['t_order'][()] = ()  # Trivial order for the empty result
 
@@ -95,12 +109,12 @@ class AnchorBaseBeam:
     @staticmethod
     def dup_bernoulli(p: np.ndarray, level: np.ndarray, n_iter: int = 17) -> np.ndarray:
         """
-        Update upper precision bound for a candidate anchors dependent on the KL-divergence.
+        Update upper accuracy bound for a candidate anchors dependent on the KL-divergence.
 
         Parameters
         ----------
         p
-            Precision of candidate anchors.
+            Accuracy of candidate anchors.
         level
             `beta / nb of samples` for each result.
         n_iter
@@ -108,7 +122,7 @@ class AnchorBaseBeam:
 
         Returns
         -------
-        Updated upper precision bounds array.
+        Updated upper accuracy bounds array.
         """
         # TODO: where does 17x sampling come from?
         lm = p.copy()
@@ -127,12 +141,12 @@ class AnchorBaseBeam:
     @staticmethod
     def dlow_bernoulli(p: np.ndarray, level: np.ndarray, n_iter: int = 17) -> np.ndarray:
         """
-        Update lower precision bound for a candidate anchors dependent on the KL-divergence.
+        Update lower accuracy bound for a candidate anchors dependent on the KL-divergence.
 
         Parameters
         ----------
         p
-            Precision of candidate anchors.
+            Accuracy of candidate anchors.
         level
             `beta / nb of samples` for each result.
         n_iter
@@ -140,7 +154,7 @@ class AnchorBaseBeam:
 
         Returns
         -------
-        Updated lower precision bounds array.
+        Updated lower accuracy bounds array.
         """
 
         um = p.copy()
@@ -170,7 +184,7 @@ class AnchorBaseBeam:
 
         Returns
         -------
-        Level used to update upper and lower precision bounds.
+        Level used to update upper and lower accuracy bounds.
         """
         # The following constants are defined and used in the paper introducing the KL-LUCB bandit algorithm
         # (http://proceedings.mlr.press/v30/Kaufmann13.html). Specifically, Theorem 1 proves the lower bounds
@@ -199,29 +213,30 @@ class AnchorBaseBeam:
             Binarised samples, where 1 indicates the feature has same value/is in same beam as
             instance to be explained. Used to determine, e.g., which samples an result applies to.
         """
-        # 回傳 raw_cov、compute_labels=True (回傳 labels)
-        raw_cov, _, _, coverage_label, coverage_data, _, _  = self.sample_fcn((0, ()), coverage_samples, compute_labels=True)
-
-        return raw_cov, coverage_label, coverage_data
+        if self.type == 'Text':
+            raw_cov, preds, coverage_data = samplers((0, ()), coverage_samples, compute_labels=True)
+        else:
+            raw_cov, _, _, preds, coverage_data, _, _  = samplers((0, ()), coverage_samples, compute_labels=True)
+        return raw_cov, preds, coverage_data
 
     def select_critical_arms(self, means: np.ndarray, ub: np.ndarray, lb: np.ndarray, n_samples: np.ndarray,
                              delta: float, top_n: int, t: int):
         """
-        Determines a set of two anchors by updating the upper bound for low empirical precision anchors and
-        the lower bound for anchors with high empirical precision.
+        Determines a set of two anchors by updating the upper bound for low empirical accuracy anchors and
+        the lower bound for anchors with high empirical accuracy.
 
         Parameters
         ----------
         means
-            Empirical mean result precisions.
+            Empirical mean result accuracies.
         ub
-            Upper bound on result precisions.
+            Upper bound on result accuracies.
         lb
-            Lower bound on result precisions.
+            Lower bound on result accuracies.
         n_samples
             The number of samples drawn for each candidate result.
         delta
-            Confidence budget, candidate anchors have close to optimal precisions with prob. `1 - delta`.
+            Confidence budget, candidate anchors have close to optimal accuracies with prob. `1 - delta`.
         top_n
             Number of arms to be selected.
         t
@@ -229,52 +244,53 @@ class AnchorBaseBeam:
 
         Returns
         -------
-        Upper and lower precision bound indices.
+        Upper and lower accuracy bound indices.
         """
 
         crit_arms = namedtuple('crit_arms', ['ut', 'lt'])
 
-        sorted_means = np.argsort(means)  # ascending sort of result candidates by precision
+        sorted_means = np.argsort(means)  # ascending sort of result candidates by accuracy
         beta = self.compute_beta(len(means), t, delta)
 
-        # J = the beam width top result candidates with highest precision
+        # J = the beam width top result candidates with highest accuracy
         # not_J = the rest
         J = sorted_means[-top_n:]
         not_J = sorted_means[:-top_n]
 
-        # update upper bound for lowest precision result candidates
+        # update upper bound for lowest accuracy result candidates
         ub[not_J] = self.dup_bernoulli(means[not_J], beta / n_samples[not_J])
-        # update lower bound for highest precision result candidates
+        # update lower bound for highest accuracy result candidates
         lb[J] = self.dlow_bernoulli(means[J], beta / n_samples[J])
 
-        # for the low precision result candidates, compute the upper precision bound and keep the index ...
-        # ... of the result candidate with the highest upper precision value -> ut
-        # for the high precision result candidates, compute the lower precision bound and keep the index ...
-        # ... of the result candidate with the lowest lower precision value -> lt
+        # for the low accuracy result candidates, compute the upper accuracy bound and keep the index ...
+        # ... of the result candidate with the highest upper accuracy value -> ut
+        # for the high accuracy result candidates, compute the lower accuracy bound and keep the index ...
+        # ... of the result candidate with the lowest lower accuracy value -> lt
         ut = not_J[np.argmax(ub[not_J])]
         lt = J[np.argmin(lb[J])]
 
         return crit_arms._make((ut, lt))
 
-    def kllucb(self, anchors: list, init_stats: dict, epsilon: float, delta: float, batch_size: int, top_n: int,
+    
+    def kllucb_automata(self, dfas: list, init_stats: dict, epsilon: float, delta: float, batch_size: int, top_n: int,
                verbose: bool = False, verbose_every: int = 1) -> np.ndarray:
         """
         Implements the KL-LUCB algorithm (Kaufmann and Kalyanakrishnan, 2013).
 
         Parameters
         ----------
-        anchors:
-            A list of anchors from which two critical anchors are selected (see Kaufmann and Kalyanakrishnan, 2013).
+        dfas:
+            A list of dfas from which two critical dfas are selected (see Kaufmann and Kalyanakrishnan, 2013).
         init_stats
             Dictionary with lists containing nb of samples used and where sample predictions equal the desired label.
         epsilon
-            Precision bound tolerance for convergence.
+            Accuracy bound tolerance for convergence.
         delta
             Used to compute `beta`.
         batch_size
             Number of samples.
         top_n
-            Min of beam width size or number of candidate anchors.
+            Min of beam width size or number of candidate dfas.
         verbose
             Whether to print intermediate output.
         verbose_every
@@ -282,38 +298,47 @@ class AnchorBaseBeam:
 
         Returns
         -------
-        Indices of best result options. Number of indices equals min of beam width or nb of candidate anchors.
+        Indices of best result options. Number of indices equals min of beam width or nb of candidate dfas.
         """
 
-        # n_features equals to the nb of candidate anchors
-        n_features = len(anchors)
+        # n_features equals to the nb of candidate dfas
+        n_features = len(dfas)
 
         # arrays for total number of samples & positives (# samples where prediction equals desired label)
-        n_samples, positives = init_stats['n_samples'], init_stats['positives']
-        anchors_to_sample, anchors_idx = [], [] # 收集「尚未取樣過」的 anchors 及其對應的索引
+        n_samples, n_accepted, positives, negatives = init_stats['n_samples'], init_stats['n_accepted'], init_stats['positives'], init_stats['negatives']
+        dfas_to_sample, dfas_idx = [], []
         for f in np.where(n_samples == 0)[0]:
-            anchors_to_sample.append(anchors[f])
-            anchors_idx.append(f)
+            dfas_to_sample.append(dfas[f])
+            dfas_idx.append(f)
 
-        if anchors_idx:
-            pos, total = self.draw_samples(anchors_to_sample, 1)
-            positives[anchors_idx] += pos
-            n_samples[anchors_idx] += total
+        if dfas_idx:
+            true_accept, false_reject, total, accepted = self.draw_samples(dfas_to_sample, 1)
+            positives[dfas_idx] += true_accept
+            negatives[dfas_idx] += false_reject
+            n_samples[dfas_idx] += total
+            n_accepted[dfas_idx] += accepted
 
         if n_features == top_n:  # return all options b/c of beam search width
             return np.arange(n_features)
 
-        # update the upper and lower precision bounds until the difference between the best upper ...
-        # ... precision bound of the low precision anchors and the worst lower precision bound of the high ...
-        # ... precision anchors is smaller than eps
-        means = positives / n_samples  # fraction sample predictions equal to desired label
+        # update the upper and lower accuracy bounds until the difference between the best upper ...
+        # ... accuracy bound of the low accuracy dfas and the worst lower accuracy bound of the high ...
+        # ... accuracy dfas is smaller than eps
+        denom = positives + negatives
+        means = np.divide(
+            denom,
+            n_samples,
+            out=np.zeros_like(positives),
+            where=n_samples != 0
+        )
         ub, lb = np.zeros(n_samples.shape), np.zeros(n_samples.shape)
         t = 1
         crit_a_idx = self.select_critical_arms(means, ub, lb, n_samples, delta, top_n, t)
         B = ub[crit_a_idx.ut] - lb[crit_a_idx.lt]
         verbose_count = 0
 
-        while B > epsilon:
+        MAX_ROUNDS = 500 
+        while B > epsilon and t < MAX_ROUNDS:
             print(f"Round {t} : {crit_a_idx}")
             verbose_count += 1
             if verbose and verbose_count % verbose_every == 0:
@@ -324,14 +349,22 @@ class AnchorBaseBeam:
                       (ut, means[ut], n_samples[ut], ub[ut]), end=' ')
                 print('B = %.2f' % B)
 
-            # draw samples for each critical result, update anchors' mean, upper and lower
-            # bound precision estimate
-            selected_anchors = [anchors[idx] for idx in crit_a_idx]
-            pos, total = self.draw_samples(selected_anchors, batch_size)
+            # draw samples for each critical result, update dfas' mean, upper and lower
+            # bound accuracy estimate
+            selected_dfas = [dfas[idx] for idx in crit_a_idx]
+            true_accept, false_reject, total, accepted = self.draw_samples(selected_dfas, batch_size)
             idx = list(crit_a_idx)
-            positives[idx] += pos
+            positives[idx] += true_accept
+            negatives[idx] += false_reject
             n_samples[idx] += total
-            means = positives / n_samples
+            n_accepted[idx] += accepted
+            denom = positives + negatives
+            means = np.divide(
+                denom,
+                n_samples,
+                out=np.zeros_like(positives),
+                where=n_samples != 0
+            )
             t += 1
             crit_a_idx = self.select_critical_arms(means, ub, lb, n_samples, delta, top_n, t)
             B = ub[crit_a_idx.ut] - lb[crit_a_idx.lt]
@@ -340,12 +373,12 @@ class AnchorBaseBeam:
 
         return sorted_means[-top_n:]
 
-    def draw_samples(self, anchors: list, batch_size: int) -> Tuple[tuple, tuple]:
+    def draw_samples(self, dfas: list, batch_size: int) -> Tuple[tuple, tuple]:
         """
         Parameters
         ----------
-        anchors
-            Anchors on which samples are conditioned.
+        dfas
+            DFAs on which samples are conditioned.
         batch_size
             The number of samples drawn for each result.
 
@@ -354,94 +387,22 @@ class AnchorBaseBeam:
         A tuple of positive samples (for which prediction matches desired label) and a tuple of \
         total number of samples drawn.
         """
-
-        for anchor in anchors:
-            if anchor not in self.state['t_order']:
-                self.state['t_order'][anchor] = list(anchor)
-
         sample_stats: List = []
         pos: Tuple = tuple()
         total: Tuple = tuple()
-        samples_iter = [self.sample_fcn((i, tuple(self.state['t_order'][anchor])), num_samples=batch_size)
-                        for i, anchor in enumerate(anchors)] # 依序對每個 anchor 抽樣 batch_size 筆資料
+        samples_iter = [self.sample_fcn(num_samples=batch_size) for dfa in dfas]
         
-        for samples, anchor in zip(samples_iter, anchors):
-            print(f"Anchor: {anchor}")
+        for samples, dfa in zip(samples_iter, dfas):
+            raw_data, labels = samples
 
-            raw_data, covered_true, covered_false, labels, *additionals, _ = samples
+            # update state records
+            sample_stats.append(self.update_state(labels, raw_data, dfa))
+            true_accept, false_reject, total, accepted = list(zip(*sample_stats))
 
-            # 更新 log 紀錄 (每次抽樣的二元值、原始值與對應 label)
-            AUTO_INSTANCE.log_samples(self.type, raw_data, labels, additionals)
+        return true_accept, false_reject, total, accepted
 
-            # 更新 state 記錄
-            sample_stats.append(self.update_state(covered_true, covered_false, labels, additionals, anchor)) # raw_data
-            pos, total = list(zip(*sample_stats))
-
-            # 生成自動機
-            # self.dfa, self.testing_data = AUTO_INSTANCE.create_automata(self.type, anchor, self.state)
-        print("--------------------------------------")
-        return pos, total
-
-    def propose_anchors(self, previous_best: list) -> list:
-        """
-        Parameters
-        ----------
-        previous_best
-            List with tuples of result candidates.
-
-        Returns
-        -------
-        List with tuples of candidate anchors with additional metadata.
-        """
-        # compute some variables used later on
-        state = self.state
-        all_features = range(state['n_features'])
-        coverage_data = state['coverage_data']
-        current_idx = state['current_idx']
-        data = state['data'][:current_idx]
-        labels = state['labels'][:current_idx]
-
-        # initially, every feature separately is an result
-        if len(previous_best) == 0:
-            tuples = [(x,) for x in all_features]
-            for x in tuples:
-                pres = data[:, x[0]].nonzero()[0]  # Select samples whose feat value is = to the result value
-                state['t_idx'][x] = set(pres)
-                state['t_nsamples'][x] = float(len(pres))
-                state['t_positives'][x] = float(labels[pres].sum())
-                state['t_order'][x].append(x[0])
-                state['t_coverage_idx'][x] = set(coverage_data[:, x[0]].nonzero()[0])
-                state['t_coverage'][x] = (float(len(state['t_coverage_idx'][x])) / coverage_data.shape[0])
-            
-            return tuples
-
-        # create new anchors: add a feature to every result in current best
-        new_tuples: Set[tuple] = set()
-        for f in all_features:
-            for t in previous_best:
-                new_t = self._sort(t + (f,), allow_duplicates=False)
-                if len(new_t) != len(t) + 1:  # Avoid repeating the same feature ...
-                    continue
-                if new_t not in new_tuples:
-                    new_tuples.add(new_t)
-                    state['t_order'][new_t] = copy.deepcopy(state['t_order'][t])
-                    state['t_order'][new_t].append(f)
-                    state['t_coverage_idx'][new_t] = (state['t_coverage_idx'][t].intersection(
-                        state['t_coverage_idx'][(f,)])
-                    )
-                    state['t_coverage'][new_t] = (float(len(state['t_coverage_idx'][new_t])) / coverage_data.shape[0])
-                    t_idx = np.array(list(state['t_idx'][t]))  # indices of samples where the len-1 result applies
-                    t_data = state['data'][t_idx]
-                    present = np.where(t_data[:, f] == 1)[0]
-                    state['t_idx'][new_t] = set(t_idx[present])  # indices of samples where the proposed result applies
-                    idx_list = list(state['t_idx'][new_t])
-                    state['t_nsamples'][new_t] = float(len(idx_list))
-                    state['t_positives'][new_t] = np.sum(state['labels'][idx_list])
-
-        return list(new_tuples)
-
-    def update_state(self, covered_true: np.ndarray, covered_false: np.ndarray, labels: np.ndarray,
-                     samples: Tuple[np.ndarray, float], anchor: tuple) -> Tuple[int, int]:
+    def update_state(self, labels: np.ndarray,
+                     samples: Tuple[np.ndarray, float], dfa: tuple) -> Tuple[int, int]:
         """raw_data: np.ndarray, 
         Updates the explainer state (see :py:meth:`alibi.explainers.anchors.anchor_base.AnchorBaseBeam.__init__`
         for full state definition).
@@ -459,7 +420,7 @@ class AnchorBaseBeam:
         labels
             An array indicating whether the prediction on the sample matches the label
             of the instance to be explained.
-        anchor
+        dfa
             The result to be updated.
 
         Returns
@@ -469,42 +430,40 @@ class AnchorBaseBeam:
         """
 
         # data = binary matrix where 1 means a feature has the same value as the feature in the result
-        data, _ = samples
-        n_samples = data.shape[0]
-
+        n_samples = len(samples)
         current_idx = self.state['current_idx']
+        accepts = np.array([AUTO_INSTANCE.check_path_accepted(dfa, p) for p in samples])
+        true_accept = np.sum((labels == 1) & (accepts == True))
+        false_reject = np.sum((labels == 0) & (accepts == False))        
         idxs = range(current_idx, current_idx + n_samples)
-        self.state['t_idx'][anchor].update(idxs)
-        self.state['t_nsamples'][anchor] += n_samples
-        self.state['t_positives'][anchor] += labels.sum()
-        self.state['t_covered_true'][anchor] = covered_true
-        self.state['t_covered_false'][anchor] = covered_false
-        self.state['data'][idxs] = data
-        self.state['labels'][idxs] = labels
+        self.state['t_idx'][id(dfa)].update(idxs)
+        self.state['t_nsamples'][id(dfa)] += n_samples
+        self.state['t_accepted'][id(dfa)] += np.sum(accepts)
+        self.state['t_positives'][id(dfa)] += true_accept
+        self.state['t_negatives'][id(dfa)] += false_reject
+        # Store samples in list (support variable-length sequences)
+        self.state['data'].extend(samples)
+        # Extend labels array if needed
+        if current_idx + n_samples > len(self.state['labels']):
+            self.state['labels'] = np.hstack(
+                (self.state['labels'], np.zeros(n_samples, labels.dtype))
+            )
+        self.state['labels'][current_idx:current_idx + n_samples] = labels
         self.state['current_idx'] += n_samples
 
-        if self.state['current_idx'] >= self.state['data'].shape[0] - max(self.margin, n_samples):
-            prealloc_size = self.state['prealloc_size']
-            self.state['data'] = np.vstack(
-                (self.state['data'], np.zeros((prealloc_size, data.shape[1]), data.dtype))
-            )
-            self.state['labels'] = np.hstack(
-                (self.state['labels'], np.zeros(prealloc_size, labels.dtype))
-            )
+        return true_accept.sum(), false_reject.sum(), n_samples, np.sum(accepts)
 
-        return labels.sum(), data.shape[0]
-
-    def get_init_stats(self, anchors: list, coverages=False) -> dict:
+    def get_init_stats(self, dfas: list, coverages=False) -> dict:
         """
-        Finds the number of samples already drawn for each result in anchors, their
+        Finds the number of samples already drawn for each result in dfas, their
         comparisons with the instance to be explained and, optionally, coverage.
 
         Parameters
         ----------
-        anchors
-            Candidate anchors.
+        dfas
+            Candidate dfas.
         coverages
-            If ``True``, the statistics returned contain the coverage of the specified anchors.
+            If ``True``, the statistics returned contain the coverage of the specified dfas.
 
         Returns
         -------
@@ -515,106 +474,107 @@ class AnchorBaseBeam:
             return lambda: np.zeros(size)
 
         state = self.state
-        stats: Dict[str, np.ndarray] = defaultdict(array_factory((len(anchors),)))
-        for i, anchor in enumerate(anchors):
-            stats['n_samples'][i] = state['t_nsamples'][anchor]
-            stats['positives'][i] = state['t_positives'][anchor]
+        stats: Dict[str, np.ndarray] = defaultdict(array_factory((len(dfas),)))
+        for i, dfa in enumerate(dfas):
+            stats['n_samples'][i] = state['t_nsamples'][id(dfa)]
+            stats['positives'][i] = state['t_positives'][id(dfa)]
+            stats['negatives'][i] = state['t_negatives'][id(dfa)]
+            stats['n_accepted'][i] = state['t_accepted'][id(dfa)]
             if coverages:
-                stats['coverages'][i] = state['t_coverage'][anchor]
+                stats['coverages'][i] = state['t_coverage'][id(dfa)]
 
         return stats
-
-    def get_anchor_metadata(self, features: tuple, success, batch_size: int = 100) -> dict:
+    
+    def get_automata_metadata(self, automata, success, batch_size: int = 100) -> dict:
         """
-        Given the features contained in a result, it retrieves metadata such as the precision and
-        coverage of the result and partial anchors and examples where the result/partial anchors
-        apply and yield the same prediction as on the instance to be explained (`covered_true`)
-        or a different prediction (`covered_false`).
-
-        Parameters
-        ----------
-        features
-            Sorted indices of features in result.
-        success
-            Indicates whether an anchor satisfying precision threshold was met or not.
-        batch_size
-            Number of samples among which positive and negative examples for partial anchors are
-            selected if partial anchors have not already been explicitly sampled.
-
-        Returns
-        -------
-        Anchor dictionary with result features and additional metadata.
+        取得 DFA 的精確度、覆蓋率與範例資訊
         """
-
         state = self.state
-        anchor: dict = {'feature': [], 'mean': [], 'precision': [], 'coverage': [], 'examples': [],
-                        'all_precision': 0, 'num_preds': state['data'].shape[0], 'success': success}
-        current_t: tuple = tuple()
-        # draw pos and negative example where partial result applies if not sampled during search
-        to_resample, to_resample_idx = [], []
-        for f in state['t_order'][features]:
-            current_t = self._sort(current_t + (f,), allow_duplicates=False)
-            mean = (state['t_positives'][current_t] / state['t_nsamples'][current_t])
-            anchor['feature'].append(f)
-            anchor['mean'].append(mean)
-            anchor['precision'].append(mean)
-            anchor['coverage'].append(state['t_coverage'][current_t])
+        automata_id = id(automata)
 
-            # add examples where result does or does not hold
-            if current_t in state['t_covered_true']:
-                exs = {
-                    'covered_true': state['t_covered_true'][current_t],
-                    'covered_false': state['t_covered_false'][current_t],
-                    'uncovered_true': np.array([]),
-                    'uncovered_false': np.array([]),
-                }
-                anchor['examples'].append(exs)
-            else:
-                to_resample.append(current_t)
-                # sampling process relies on ordering
-                state['t_order'][current_t] = list(current_t)
-                to_resample_idx.append(len(anchor['examples']))
-                anchor['examples'].append('placeholder')
-                # if the anchor was not sampled, the coverage is not estimated
-                anchor['coverage'][-1] = 'placeholder'
+        automata_metadata: dict = {
+            'automata': automata,
+            'training_accuracy': [],
+            'testing_accuracy': [],
+            'coverage': [],
+            'size': [],
+            'examples': [],
+            'num_preds': len(state['data']),
+            'success': success,
+            'false_accept': [],
+            'true_reject': []
+        }
 
-        # If partial anchors have not been sampled, resample to find examples
-        if to_resample:
+        # get training accuracy
+        if automata_id not in state['t_accepted'] or state['t_accepted'][automata_id] == 0:
+            true_accept, false_reject, total, accepted = self.draw_samples([automata], batch_size)
+            state['t_positives'][automata_id] += true_accept
+            state['t_negatives'][automata_id] += false_reject
+            state['t_nsamples'][automata_id] += total[0]
+            state['t_accepted'][automata_id] += accepted
 
-            _, _ = self.draw_samples(to_resample, batch_size)
+        positives = state['t_positives'][automata_id]
+        negatives = state['t_negatives'][automata_id]
+        total = state['t_nsamples'][automata_id]
+        denom = positives + negatives
+        mean_accuracy = (denom / total) if total > 0 else 0.0
+        automata_metadata['training_accuracy'].append(mean_accuracy)
 
-            while to_resample:
-                feats, example_idx = to_resample.pop(), to_resample_idx.pop()
-                anchor['examples'][example_idx] = {
-                    'covered_true': state['t_covered_true'][feats],
-                    'covered_false': state['t_covered_false'][feats],
-                    'uncovered_true': np.array([]),
-                    'uncovered_false': np.array([]),
-                }
-                # update result with true coverage
-                anchor['coverage'][example_idx] = state['t_coverage'][feats]
+        # get testing accuracy (only if we have a predictor)
+        if self.predictor is not None and len(self.testing_data) > 0:
+            accepts = np.array([AUTO_INSTANCE.check_path_accepted(automata, p) for p in self.testing_data])
+            labels = self.predictor(self.testing_data)
+            
+            # Get instance label - handle both Tabular and Text types
+            instance_label = 1  # default
+            if hasattr(self.sample_fcn, 'tab_sampler') and hasattr(self.sample_fcn.tab_sampler, 'instance_label'):
+                instance_label = self.sample_fcn.tab_sampler.instance_label
+            
+            true_accept = np.sum((labels == instance_label) & (accepts == True))
+            false_reject = np.sum((labels != instance_label) & (accepts == False)) 
+            total = len(labels)
+            denom = true_accept + false_reject
+            mean_accuracy = (denom / total) if total > 0 else 0.0
+            automata_metadata['testing_accuracy'].append(mean_accuracy)  
 
-        return anchor
+            false_accept = [p for p, lab, acc in zip(self.testing_data, labels, accepts) if (lab != instance_label) and acc]
+            true_reject = [p for p, lab, acc in zip(self.testing_data, labels, accepts) if (lab == instance_label) and acc]  
+            automata_metadata['false_accept'].append(tuple(false_accept))
+            automata_metadata['true_reject'].append(tuple(true_reject))
+        else:
+            # If no predictor or testing data, set testing accuracy to training accuracy
+            automata_metadata['testing_accuracy'].append(mean_accuracy)
+            automata_metadata['false_accept'].append(tuple())
+            automata_metadata['true_reject'].append(tuple())
+
+        if hasattr(automata, 'size'):
+            size = automata.size
+        elif hasattr(automata, 'states'):
+            size = len(automata.states)
+        else:
+            size = None  # or set to 0 or raise a warning
+        automata_metadata['size'].append(size)
+        return automata_metadata
 
     @staticmethod
     def to_sample(means: np.ndarray, ubs: np.ndarray, lbs: np.ndarray, desired_confidence: float, epsilon_stop: float):
         """
-        Given an array of mean result precisions and their upper and lower bounds, determines for which anchors
-        more samples need to be drawn in order to estimate the anchors precision with `desired_confidence` and error
+        Given an array of mean result accuracies and their upper and lower bounds, determines for which anchors
+        more samples need to be drawn in order to estimate the anchors accuracy with `desired_confidence` and error
         tolerance.
 
         Parameters
         ----------
         means:
-            Mean precisions (each element represents a different result).
+            Mean accuracies (each element represents a different result).
         ubs:
-            Precisions' upper bounds (each element represents a different result).
+            Accuracies' upper bounds (each element represents a different result).
         lbs:
-            Precisions' lower bounds (each element represents a different result).
+            Accuracies' lower bounds (each element represents a different result).
         desired_confidence:
-            Desired level of confidence for precision estimation.
+            Desired level of confidence for accuracy estimation.
         epsilon_stop:
-            Tolerance around desired precision.
+            Tolerance around desired accuracy.
 
         Returns
         -------
@@ -624,17 +584,21 @@ class AnchorBaseBeam:
         return ((means >= desired_confidence) & (lbs < desired_confidence - epsilon_stop)) | \
                ((means < desired_confidence) & (ubs >= desired_confidence + epsilon_stop))
 
-    def anchor_beam(self, type:str, delta: float = 0.05, epsilon: float = 0.1, desired_confidence: float = 1.,
+    def anchor_beam(self, type:str, alphabet: List = [], automaton_type: str = "DFA", delta: float = 0.05, epsilon: float = 0.1, accuracy_threshold: float = 1., state_threshold: int = 5,
+                    select_by: str = "accuracy",
                     beam_size: int = 1, epsilon_stop: float = 0.05, min_samples_start: int = 100,
-                    max_anchor_size: Optional[int] = None, stop_on_first: bool = False, batch_size: int = 100,
-                    coverage_samples: int = 10000, verbose: bool = False, verbose_every: int = 1,
+                    min_anchor_size: Optional[int] = None, stop_on_first: bool = False, batch_size: int = 100,
+                    coverage_samples: int = 10000, verbose: bool = False, verbose_every: int = 1, 
+                    preinitialized: bool = False,
+                    output_dir: str = "test_result/explain",
+                    init_num_samples: int = 1000,
                     **kwargs) -> dict:
 
         """
         Uses the KL-LUCB algorithm (Kaufmann and Kalyanakrishnan, 2013) together with additional sampling to search
         feature sets (anchors) that guarantee the prediction made by a classifier model. The search is greedy if
         ``beam_size=1``. Otherwise, at each of the `max_anchor_size` steps, `beam_size` solutions are explored.
-        By construction, solutions found have high precision (defined as the expected of number of times the classifier
+        By construction, solutions found have high accuracy (defined as the expected of number of times the classifier
         makes the same prediction when queried with the feature subset combined with arbitrary samples drawn from a
         noise distribution). The algorithm maximises the coverage of the solution found - the frequency of occurrence
         of records containing the feature subset in set of samples.
@@ -644,13 +608,13 @@ class AnchorBaseBeam:
         delta
             Used to compute `beta`.
         epsilon
-            Precision bound tolerance for convergence.
+            Accuracy bound tolerance for convergence.
         desired_confidence
-            Desired level of precision (`tau` in `paper <https://homes.cs.washington.edu/~marcotcr/aaai18.pdf>`_).
+            Desired level of accuracy (`tau` in `paper <https://homes.cs.washington.edu/~marcotcr/aaai18.pdf>`_).
         beam_size
             Beam width.
         epsilon_stop
-            Confidence bound margin around desired precision.
+            Confidence bound margin around desired accuracy.
         min_samples_start
             Min number of initial samples.
         max_anchor_size
@@ -668,109 +632,173 @@ class AnchorBaseBeam:
 
         Returns
         -------
-        Explanation dictionary containing anchors with metadata like coverage and precision and examples.
+        Explanation dictionary containing anchors with metadata like coverage and accuracy and examples.
         """
 
-        # Select coverage set and initialise object state
         self.type = type
-        raw_cov, coverage_label, coverage_data = self._get_coverage_samples(
-            coverage_samples,
-            samplers=self.samplers,
-        ) # 加上回傳 raw_cov
-        self._init_state(batch_size, coverage_data, raw_cov)
-        self.state['coverage_raw'] = raw_cov # 加上 coverage_raw
-        self.state['coverage_label'] = coverage_label # 加上 coverage_label
-        
+        # ====== Automaton Factory ======
+        def automaton_factory(automaton_type: str):
+            if automaton_type.upper() == "DFA":
+                from learner.dfa_learner import DFALearner
+                return DFALearner()
+            elif automaton_type.upper() == "RA":
+                from learner.ra_learner import RegisterAutomataLearner
+                ra_theory = kwargs.get('theory', 'Integer')
+                ra_num_states = kwargs.get('num_states', 8)
+                ra_num_registers = kwargs.get('num_registers', 2)
+                ra_constants = kwargs.get('constants', None)
+                if ra_constants is None:
+                    ra_constants = []
+                print(f"[DEBUG] RA params: theory={ra_theory}, states={ra_num_states}, registers={ra_num_registers}, constants={ra_constants}")
+                return RegisterAutomataLearner(
+                    constants=ra_constants,
+                    theory=ra_theory,
+                    num_states=ra_num_states,
+                    num_registers=ra_num_registers
+                )
+            else:
+                raise ValueError(f"Unknown automaton type: {automaton_type}")
+
+        global AUTO_INSTANCE
+        AUTO_INSTANCE = automaton_factory(automaton_type)
+
+        if hasattr(AUTO_INSTANCE, 'get_sampler'):
+            sampler_cls = AUTO_INSTANCE.get_sampler()
+            accuracy_sampler = next(s for s in self.samplers if isinstance(s, sampler_cls))
+        else:
+            accuracy_sampler = self.samplers[0]
+        inti_samples, inti_label = accuracy_sampler(num_samples=init_num_samples, compute_labels=True)
+       
+        self.samplers = [accuracy_sampler]
+        self.sample_fcn = accuracy_sampler
+        self.iteration = 0
+        self._init_state(batch_size)
+
+        # Create initial automaton using positive and negative samples
+        positive_samples = [x for x, y in zip(inti_samples, inti_label) if y == 1]
+        negative_samples = [x for x, y in zip(inti_samples, inti_label) if y == 0]
+        origin_automata = AUTO_INSTANCE.create_init_automata(type, positive_samples, negative_samples)
+        self.automatas = [origin_automata]
+        self.testing_data = inti_samples
+
         # sample by default 1 or min_samples_start more random value(s)
-        (pos,), (total,) = self.draw_samples([()], min_samples_start)
+        (true_accept,), (false_reject,), (total,), (accepted,) = self.draw_samples([self.automatas[0]], min_samples_start)
 
         # mean = fraction of labels sampled data that equals the label of the instance to be explained, ...
         # ... equivalent to prec(A) in paper (eq.2)
-        mean = np.array([pos / total])
+        mean = np.array([(true_accept + false_reject) / total] if total > 0 else [0.0])
         beta = np.log(1. / delta)
-        # lower bound on mean precision
+        # lower bound on mean accuracy
         lb = self.dlow_bernoulli(mean, np.array([beta / total]))
 
-        # if lower precision bound below tau with margin eps, keep sampling data until lb is high enough ...
-        # or mean falls below precision threshold
-        while mean > desired_confidence and lb < desired_confidence - epsilon:
-            (n_pos,), (n_total,) = self.draw_samples([()], batch_size)
-            pos += n_pos
+        # if lower accuracy bound below tau with margin eps, keep sampling data until lb is high enough ...
+        # or mean falls below accuracy threshold
+        while mean > accuracy_threshold and lb < accuracy_threshold - epsilon:
+            (n_true_accept,), (n_false_reject,), (n_total,), (n_accepted,) = self.draw_samples([self.automatas[0]], batch_size)
+            true_accept += n_true_accept
+            false_reject += n_false_reject
             total += n_total
-            mean = np.array([pos / total])
+            accepted += n_accepted
+            mean = np.array([(true_accept + false_reject) / total] if total > 0 else [0.0])
             lb = self.dlow_bernoulli(mean, np.array([beta / total]))
+        
+        # Robustly get automaton size: use .size if present, else len(states), else fallback
+        automaton = self.automatas[0]
+        if hasattr(automaton, 'size'):
+            size = automaton.size
+        elif hasattr(automaton, 'states'):
+            size = len(automaton.states)
+        else:
+            size = None  # or set to 0 or raise a warning
 
         # if prec_lb(A) > tau for A=() then the empty result satisfies the constraints ...
-        if lb > desired_confidence:
+        min_states = 2
+        if lb > accuracy_threshold and size <= state_threshold and size >= min_states:
             return {
-                'feature': [],
-                'mean': [],
-                'num_preds': total,
-                'precision': [],
+                'automata': self.automatas[0],
+                'training_accuracy': mean,
+                'testing_accuracy': 1.0,
+                'size': size,
                 'coverage': [],
                 'examples': [],
-                'all_precision': mean,
                 'success': True,
+                'false_accept': [],
+                'true_reject': []
             }
-
-        current_size, best_coverage = 1, -1
-        best_of_size: Dict[int, list] = {0: []}
-        best_anchor = ()
-
-        if max_anchor_size is None:
-            max_anchor_size = self.state['n_features']
-
+        
+        best_of_size = {} # each round
+        all_history = []         # 所有候選自動機的紀錄
+    
         # find best result using beam search
-        while current_size <= max_anchor_size:
+        while True:
+            print("======================================")
+            print("Beam Search Iteration:", self.iteration)
+            # if self.iteration > 100:
+            #     print("Max iterations reached. Stopping.")
+            #     break
+
             # create new candidate anchors by adding features to current best anchors
-            anchors = self.propose_anchors(best_of_size[current_size - 1])
-            # goal is to max coverage given precision constraint P(prec(A) > tau) > 1 - delta (eq.4)
-            # so keep tuples with higher coverage than current best coverage
-            anchors = [anchor for anchor in anchors if self.state['t_coverage'][anchor] > best_coverage]
+            automatas = AUTO_INSTANCE.propose_automata(self.automatas, self.state, self.sample_fcn, self.iteration, best_of_size.get(self.iteration, []), self.type, beam_size)
 
             # if no better coverage found with added features -> break
-            if len(anchors) == 0:
+            if len(automatas) == 0:
+                print("No candidates survived. Stopping.")
                 break
 
-            # for each result, get initial nb of samples used and prec(A)
-            stats = self.get_init_stats(anchors)
+            # for each result, get initial nb of samples used and acc(A)
+            stats = self.get_init_stats(automatas)
 
             # apply KL-LUCB and return result options (nb of options = beam width) in the form of indices
-            candidate_anchors = self.kllucb(
-                anchors,
+            candidate_automatas = self.kllucb_automata(
+                automatas,
                 stats,
                 epsilon,
                 delta,
                 batch_size,
-                min(beam_size, len(anchors)),
+                min(beam_size, len(automatas)),
                 verbose=verbose,
                 verbose_every=verbose_every,
             )
-            # store best anchors for the given result size (nb of features in the result)
-            best_of_size[current_size] = [anchors[index] for index in candidate_anchors]
+            # store best automatas for the given result size (nb of features in the result)
+            best_of_size[self.iteration+1] = [automatas[index] for index in candidate_automatas]
+            beam = best_of_size[self.iteration+1]
             # for each candidate result:
-            #   update precision, lower and upper bounds until precision constraints are met
-            #   update best result if coverage is larger than current best coverage
-            stats = self.get_init_stats(best_of_size[current_size], coverages=True)
-            positives, n_samples = stats['positives'], stats['n_samples']
-            beta = np.log(1. / (delta / (1 + (beam_size - 1) * self.state['n_features'])))
+            #   update accuracy, lower and upper bounds until accuracy constraints are met
+            stats = self.get_init_stats(best_of_size[self.iteration+1], coverages=True)
+            positives, negatives, n_accepted, n_samples = stats['positives'], stats['negatives'], stats['n_accepted'], stats['n_samples']
+            beta = np.log(1. / (delta / (1 + (beam_size - 1) * len(automatas))))
             kl_constraints = beta / n_samples
-            means = stats['positives'] / stats['n_samples']
+            denom = positives + negatives
+            means = np.divide(
+                denom,
+                n_samples,
+                out=np.zeros_like(n_samples),
+                where=n_samples != 0
+            )
             lbs = self.dlow_bernoulli(means, kl_constraints)
             ubs = self.dup_bernoulli(means, kl_constraints)
             if verbose:
-                print('Best of size ', current_size, ':')
-                for i, mean, lb, ub in zip(candidate_anchors, means, lbs, ubs):
-                    print(i, mean, lb, ub)
+                # print('Best of size ', self.iteration, ':')
+                for i, mean, lb, ub in zip(candidate_automatas, means, lbs, ubs):
+                    print(f"Candidate Automata ID: {id(automatas[i])}, 'mean': {mean}, 'lb': {lb}, 'ub': {ub}")
 
-            # draw samples to ensure result meets precision criteria
-            continue_sampling = self.to_sample(means, ubs, lbs, desired_confidence, epsilon_stop)
+            # draw samples to ensure result meets accuracy criteria
+            continue_sampling = self.to_sample(means, ubs, lbs, accuracy_threshold, epsilon_stop)
             while continue_sampling.any():
-                selected_anchors = [anchors[idx] for idx in candidate_anchors[continue_sampling]]
-                pos, total = self.draw_samples(selected_anchors, batch_size)
-                positives[continue_sampling] += pos
+                selected_automatas = [automatas[idx] for idx in candidate_automatas[continue_sampling]]
+                # selected_dfas = [beam[idx] for idx in continue_sampling]
+                true_accept, false_reject, total, accepted = self.draw_samples(selected_automatas, batch_size)
+                positives[continue_sampling] += true_accept
+                negatives[continue_sampling] += false_reject
                 n_samples[continue_sampling] += total
-                means[continue_sampling] = positives[continue_sampling] / n_samples[continue_sampling]
+                n_accepted[continue_sampling] += accepted
+                denom = positives[continue_sampling] + negatives[continue_sampling]
+                means[continue_sampling] = np.divide(
+                    denom,
+                    n_samples[continue_sampling],
+                    out=np.zeros_like(n_samples[continue_sampling]),
+                    where=n_samples[continue_sampling] != 0
+                )
                 kl_constraints[continue_sampling] = beta / n_samples[continue_sampling]
                 lbs[continue_sampling] = self.dlow_bernoulli(
                     means[continue_sampling],
@@ -781,60 +809,126 @@ class AnchorBaseBeam:
                     kl_constraints[continue_sampling],
                 )
 
-                continue_sampling = self.to_sample(means, ubs, lbs, desired_confidence, epsilon_stop)
+                continue_sampling = self.to_sample(means, ubs, lbs, accuracy_threshold, epsilon_stop)
             
-            # anchors who meet the precision setting and have better coverage than the best anchors so far
-            coverages = stats['coverages']
-            valid_anchors = (means >= desired_confidence) & (lbs > desired_confidence - epsilon_stop)
-            better_anchors = (valid_anchors & (coverages > best_coverage)).nonzero()[0]
+            # Collect full history
+            for automata, m, lb in zip(beam, means, lbs):
+                states = len(automata.states)
+
+                # Skip candidates with no reachable accepting state (invalid DFA)
+                if automaton_type == "DFA" and not any(s.is_accepting for s in automata.states):
+                    print(f"  [SKIP] Candidate {id(automata)} has no reachable accepting state, excluding from history.")
+                    continue
+
+                # 最少需要2個狀態，避免trivial單狀態自動機
+                min_states = 2
+                if states < min_states:
+                    continue
+
+                record = {
+                    "automata": automata,
+                    "accuracy": float(m),
+                    "lb": float(lb),
+                    "states": states,
+                }
+                all_history.append(record)
 
             if verbose:
-                for i, valid, mean, lb, ub, coverage in \
-                        zip(candidate_anchors, valid_anchors, means, lbs, ubs, coverages):
-                    t = anchors[i]
-                    print(
-                        '%s mean = %.2f lb = %.2f ub = %.2f coverage: %.2f n: %d' %
-                        (t, mean, lb, ub, coverage, self.state['t_nsamples'][t]))
-                    if valid:
-                        print(
-                            'Found eligible result ', t,
-                            'Coverage:', coverage,
-                            'Is best?', coverage > best_coverage,
-                        )
+                for i, mean, lb, ub in zip(candidate_automatas, means, lbs, ubs):
+                    t = id(automatas[i])
+                    print('%s training accuracy = %.2f lb = %.2f ub = %.2f n: %d' %
+                        (t, float(mean), float(lb), float(ub), int(self.state['t_nsamples'][t])))
+            self.iteration += 1
 
-            if better_anchors.size > 0:
-                best_anchor_idx = better_anchors[np.argmax(coverages[better_anchors])]
-                best_coverage = coverages[best_anchor_idx]
-                best_anchor = anchors[candidate_anchors[best_anchor_idx]]
-                if best_coverage == 1. or stop_on_first:
-                    break
+        # plot beam search statistics
+        iteration_stats = []
+        for i in range(self.iteration + 1):
+            if i + 1 not in best_of_size:
+                continue
+            automatas = best_of_size[i + 1]
+            iteration_stats.append({
+                "iteration": i,
+                "training_accuracies": [self.get_automata_metadata(d, success=True)["training_accuracy"] for d in automatas],
+                "testing_accuracies": [self.get_automata_metadata(d, success=True)["testing_accuracy"] for d in automatas],
+                "states": [len(d.states) for d in automatas],
+            })
 
-            current_size += 1
+        if iteration_stats:
+            print("Initial training accuracy : ",iteration_stats[0]["training_accuracies"])
+            print("Initial testing accuracy : ",iteration_stats[0]["testing_accuracies"])
+            print("Initial number of states : ",iteration_stats[0]["states"])
+            if(automaton_type == "DFA"):
+                AUTO_INSTANCE.automaton_to_graphviz(origin_automata, output_dir=output_dir)
+            if automaton_type == "RA":
+                AUTO_INSTANCE.automaton_to_graphviz(origin_automata, filename="origin_automata", output_dir=output_dir)
 
-        # if no result is found, choose highest precision of best result candidate from every round
-        if not best_anchor:
-            success = False  # indicates the method has not found an anchor
-            logger.warning(f'Could not find an anchor satisfying the {desired_confidence} precision constraint. '
-                           f'Now returning the best non-eligible result. The desired precision threshold might not be '
-                           f'achieved due to the quantile-based discretisation of the numerical features. The '
-                           f'resolution of the bins may be too large to find an anchor of required precision. '
-                           f'Consider increasing the number of bins in `disc_perc`, but note that for some '
-                           f'numerical distribution (e.g. skewed distribution) it may not help.')
-            anchors = []
-            for i in range(0, current_size):
-                anchors.extend(best_of_size[i])
-            stats = self.get_init_stats(anchors)
-            candidate_anchors = self.kllucb(
-                anchors,
-                stats,
-                epsilon,
-                delta,
-                batch_size,
-                1,  # beam size
-                verbose=verbose,
-            )
-            best_anchor = anchors[candidate_anchors[0]]
-        else:
-            success = True
+            plot_dfa_beam_stats(iteration_stats, beam_size, output_dir=output_dir)
 
-        return self.get_anchor_metadata(best_anchor, success, batch_size=batch_size)
+        # ====== 根據使用者指定的 select_by 決定回傳策略 ======
+        def _cleanup_and_return(best_record, success, label=""):
+            """統一的 cleanup + return 邏輯"""
+            automata = best_record["automata"]
+            if automaton_type == "RA":
+                print(f"\n[FINAL CLEANUP] Cleaning up {label} RA before returning...")
+                AUTO_INSTANCE._remove_unreachable_states(automata, verbose=True)
+                for state_node in list(automata.states):
+                    if state_node in automata.transitions:
+                        AUTO_INSTANCE._dedup_outgoing(automata, state_node, verbose=True)
+                AUTO_INSTANCE.automaton_to_graphviz(automata, filename="final_automata", output_dir=output_dir)
+            elif automaton_type == "DFA":
+                print(f"\n[FINAL CLEANUP] Cleaning up {label} DFA before returning...")
+                from learner.dfa_learner import remove_unreachable_states
+                remove_unreachable_states(automata)
+                n_states_after = len(automata.states)
+                has_accept = any(s.is_accepting for s in automata.states)
+                print(f"  States after cleanup: {n_states_after}, has accepting state: {has_accept}")
+                AUTO_INSTANCE.automaton_to_graphviz(automata, output_dir=output_dir)
+            return self.get_automata_metadata(automata, success=success, batch_size=batch_size)
+
+        print(f"\n[SELECT] select_by='{select_by}', accuracy_threshold={accuracy_threshold}, state_threshold={state_threshold}")
+        print(f"  Total candidates in history: {len(all_history)}")
+
+        if all_history:
+            if select_by == "accuracy":
+                # ===== 模式 1: 以 accuracy_threshold 為主 =====
+                # 找精確度 >= accuracy_threshold 的候選，從中選狀態數最小的
+                qualified = [r for r in all_history if r["accuracy"] >= accuracy_threshold]
+                if qualified:
+                    best = min(qualified, key=lambda x: x["states"])
+                    print(f"  [accuracy mode] {len(qualified)} candidates meet accuracy >= {accuracy_threshold}.")
+                    print(f"  Selected: states={best['states']}, accuracy={best['accuracy']:.4f}")
+                    return _cleanup_and_return(best, success=True, label="qualified(accuracy)")
+                else:
+                    # 沒有任何候選達到 accuracy_threshold → 回傳精確度最高的 (best-effort)
+                    best = max(all_history, key=lambda x: x["accuracy"])
+                    print(f"  [accuracy mode] No candidate meets accuracy >= {accuracy_threshold}.")
+                    print(f"  Best-effort: states={best['states']}, accuracy={best['accuracy']:.4f}")
+                    return _cleanup_and_return(best, success=False, label="best-effort(accuracy)")
+
+            elif select_by == "state":
+                # ===== 模式 2: 以 state_threshold 為主 =====
+                # 找狀態數 <= state_threshold 的候選，從中選精確度最高的
+                under_state = [r for r in all_history if r["states"] <= state_threshold]
+                if under_state:
+                    best = max(under_state, key=lambda x: x["accuracy"])
+                    print(f"  [state mode] {len(under_state)} candidates have states <= {state_threshold}.")
+                    print(f"  Selected: states={best['states']}, accuracy={best['accuracy']:.4f}")
+                    return _cleanup_and_return(best, success=True, label="qualified(state)")
+                else:
+                    # 沒有任何候選的狀態數 <= state_threshold → 回傳精確度最高的 (best-effort)
+                    best = max(all_history, key=lambda x: x["accuracy"])
+                    print(f"  [state mode] No candidate has states <= {state_threshold}.")
+                    print(f"  Best-effort: states={best['states']}, accuracy={best['accuracy']:.4f}")
+                    return _cleanup_and_return(best, success=False, label="best-effort(state)")
+            else:
+                raise ValueError(f"Unknown select_by='{select_by}'. Use 'accuracy' or 'state'.")
+
+        # Safety fallback: 沒有任何候選產生，回傳初始自動機
+        print("\n[SELECT] No candidates generated during beam search. Returning initial automaton.")
+        if automaton_type == "RA":
+            print("\n[FINAL CLEANUP] Cleaning up fallback RA before returning...")
+            AUTO_INSTANCE._remove_unreachable_states(origin_automata, verbose=True)
+            for state in list(origin_automata.states):
+                if state in origin_automata.transitions:
+                    AUTO_INSTANCE._dedup_outgoing(origin_automata, state, verbose=True)
+        return self.get_automata_metadata(origin_automata, success=False, batch_size=batch_size)

@@ -6,8 +6,8 @@ from typing import (Dict, List, Optional, Tuple)
 import numpy as np
 import tensorflow as tf
 
-from modified_modules.utils.lang_model import LanguageModel
-from modified_modules.explainers.anchors.text_samplers import AnchorTextSampler
+from modified_modules.alibi.utils.lang_model import LanguageModel
+from modified_modules.alibi.explainers.anchors.text_samplers import AnchorTextSampler
 
 
 class LanguageModelSampler(AnchorTextSampler):

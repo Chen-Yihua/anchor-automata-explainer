@@ -4,8 +4,8 @@ sys.path.insert(0, './src')
 from tee import Tee
 import numpy as np
 from alibi.explainers import AnchorTabular
-from automaton.dfa_operatopn import dfa_intersection, get_base_dfa, merge_linear_edges, merge_parallel_edges
-from dataset_loader import fetch_custom_dataset  # 通用載入器
+from automaton.dfa_operation import dfa_intersection, get_base_dfa, merge_linear_edges, merge_parallel_edges
+from data.dataset_loader import fetch_custom_dataset  # 通用載入器
 
 # 載入資料
 b = fetch_custom_dataset(

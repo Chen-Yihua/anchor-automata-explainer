@@ -7,6 +7,7 @@ from typing import (TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, U
 import numpy as np
 import spacy
 
+from automaton.utils import add_position_to_sample, tokenize_sentence
 from modified_modules.alibi.utils.missing_optional_dependency import import_optional
 from modified_modules.alibi.api.defaults import DEFAULT_DATA_ANCHOR, DEFAULT_META_ANCHOR
 from modified_modules.alibi.api.interfaces import Explainer, Explanation
@@ -17,7 +18,7 @@ from modified_modules.alibi.utils.wrappers import ArgmaxTransformer
 from .anchor_base import AnchorBaseBeam
 from .anchor_explanation import AnchorExplanation
 
-from .text_samplers import UnknownSampler, SimilaritySampler, ShapTextSampler, load_spacy_lexeme_prob
+from .text_samplers import UnknownSampler, SimilaritySampler, ShapTextSampler, EditDistanceTextSampler, load_spacy_lexeme_prob
 
 LanguageModelSampler = import_optional(
     'alibi.explainers.anchors.language_model_text_sampler',
@@ -26,8 +27,8 @@ LanguageModelSampler = import_optional(
 if TYPE_CHECKING:
     import spacy  # noqa: F811
     from modified_modules.alibi.utils.lang_model import LanguageModel
-else:
-    from modified_modules.alibi.utils import LanguageModel
+# else:
+#     from modified_modules.alibi.utils import LanguageModel
 
 logger = logging.getLogger(__name__)
 
@@ -112,19 +113,26 @@ DEFAULT_SAMPLING_SHAP = {
     "vectorizer": None,
 }
 
+DEFAULT_SAMPLING_EDIT_DISTANCE = {
+    "edit_dist": 1,
+    "seed": 0,
+}
+
 class AnchorText(Explainer):
     # sampling methods
     SAMPLING_UNKNOWN = 'unknown'  #: Unknown sampling strategy.
     SAMPLING_SIMILARITY = 'similarity'  #: Similarity sampling strategy.
     SAMPLING_LANGUAGE_MODEL = 'language_model'  #: Language model sampling strategy.
     SAMPLING_SHAP = 'shap'
+    SAMPLING_EDIT_DISTANCE = 'edit_distance'
 
     # default params
     DEFAULTS: Dict[str, Dict] = {
         SAMPLING_UNKNOWN: DEFAULT_SAMPLING_UNKNOWN,
         SAMPLING_SIMILARITY: DEFAULT_SAMPLING_SIMILARITY,
         SAMPLING_LANGUAGE_MODEL: DEFAULT_SAMPLING_LANGUAGE_MODEL,
-        SAMPLING_SHAP: DEFAULT_SAMPLING_SHAP
+        SAMPLING_SHAP: DEFAULT_SAMPLING_SHAP,
+        SAMPLING_EDIT_DISTANCE: DEFAULT_SAMPLING_EDIT_DISTANCE,
     }
 
     # class of samplers
@@ -132,7 +140,9 @@ class AnchorText(Explainer):
         SAMPLING_UNKNOWN: UnknownSampler,
         SAMPLING_SIMILARITY: SimilaritySampler,
         SAMPLING_LANGUAGE_MODEL: LanguageModelSampler,
-        SAMPLING_SHAP: ShapTextSampler
+        SAMPLING_SHAP: ShapTextSampler, 
+        SAMPLING_EDIT_DISTANCE: EditDistanceTextSampler 
+
     }
 
     def __init__(self,
@@ -197,9 +207,13 @@ class AnchorText(Explainer):
                                                             language_model=language_model, **kwargs)
 
         # set perturbation
-        self.perturbation: Any = \
-            self.CLASS_SAMPLER[self.sampling_strategy](self.model, self.perturb_opts)  #: Perturbation method.
-
+        # self.perturbation: Any = \
+        #     self.CLASS_SAMPLER[self.sampling_strategy](self.model, self.perturb_opts)  #: Perturbation method.
+        if self.sampling_strategy == self.SAMPLING_EDIT_DISTANCE:
+            self.perturbation = EditDistanceTextSampler(words=[], seed=seed, edit_dist=kwargs.get("edit_dist", 1))
+        else:
+            self.perturbation = self.CLASS_SAMPLER[self.sampling_strategy](self.model, self.perturb_opts)
+        
         # update metadata
         self.meta['params'].update(seed=seed)
         self.meta['params'].update(**all_opts)
@@ -218,7 +232,8 @@ class AnchorText(Explainer):
             self.SAMPLING_UNKNOWN,
             self.SAMPLING_SIMILARITY,
             self.SAMPLING_LANGUAGE_MODEL,
-            self.SAMPLING_SHAP
+            self.SAMPLING_SHAP,
+            self.SAMPLING_EDIT_DISTANCE
         ]
 
         # validate sampling method
@@ -233,6 +248,8 @@ class AnchorText(Explainer):
                                  f"`sampling_strategy` set to `{sampling_strategy}`.")
             # set nlp object
             self.model = load_spacy_lexeme_prob(nlp)
+        elif sampling_strategy == self.SAMPLING_EDIT_DISTANCE:
+            self.model = None 
         elif sampling_strategy == self.SAMPLING_SHAP:
             if nlp is None:
                 raise ValueError("spaCy model can not be `None` when sampling_strategy set to `shap`.")
@@ -309,19 +326,20 @@ class AnchorText(Explainer):
         Otherwise, a list containing the data matrix only is returned.
         """
 
-        raw_data, data = self.perturbation(anchor[1], num_samples)
-        self.raw_coverage_data = raw_data # 我加了紀錄 coverage_data 的原始資料
+        raw_data, data = self.perturbation(anchor, num_samples)
+        self.raw_coverage_data = raw_data
 
         # create labels using model predictions as true labels
         if compute_labels:
             labels = self.compare_labels(raw_data)
-            covered_true = raw_data[labels][:self.n_covered_ex]
-            covered_false = raw_data[np.logical_not(labels)][:self.n_covered_ex]
-
+            raw_data = tokenize_sentence(raw_data)
+            raw_data = add_position_to_sample(raw_data)
             # coverage set to -1.0 as we can't compute 'true' coverage for this model
-            return [raw_data, covered_true, covered_false, labels.astype(int), data, -1.0, anchor[0]] # 我加上回傳 raw_data
+            return [raw_data, labels.astype(int)]
         else:
-            return [data]
+            raw_data = tokenize_sentence(raw_data)
+            raw_data = add_position_to_sample(raw_data)
+            return [raw_data]
 
     def compare_labels(self, samples: np.ndarray) -> np.ndarray:
         """
@@ -342,7 +360,9 @@ class AnchorText(Explainer):
 
     def explain(self,  # type: ignore[override]
                 type: str,
+                automaton_type: str,
                 text: str,
+                edit_distance: int = 4,
                 threshold: float = 0.95,
                 delta: float = 0.1,
                 tau: float = 0.15,
@@ -448,10 +468,14 @@ class AnchorText(Explainer):
         self.instance_label = self.predictor([text])[0]
 
         # set sampler
-        if self.sampling_strategy != 'shap':
+        if self.sampling_strategy == self.SAMPLING_EDIT_DISTANCE:
+            self.perturbation.set_text(text)
+            self.perturbation.edit_dist = edit_distance  # 設定 edit_distance
+        elif self.sampling_strategy != 'shap':
             self.perturbation.set_text(text)
         else:
             self.perturbation.set_text(text, predictor=self.predictor)
+        # self.perturbation.set_text(text, predictor=self.predictor)
 
         # get anchors and add metadata
         mab = AnchorBaseBeam(
@@ -463,6 +487,7 @@ class AnchorText(Explainer):
 
         result: Any = mab.anchor_beam(
             type=type,
+            automaton_type=automaton_type,
             delta=delta,
             epsilon=tau,
             batch_size=batch_size,
@@ -477,19 +502,19 @@ class AnchorText(Explainer):
             **kwargs,
         )
 
-        if self.sampling_strategy == self.SAMPLING_LANGUAGE_MODEL:
-            # take the whole word (this points just to the first part of the word)
-            result['positions'] = [self.perturbation.ids_mapping[i] for i in result['feature']]
-            result['names'] = [
-                self.perturbation.model.select_word(
-                    self.perturbation.head_tokens,
-                    idx_feature,
-                    self.perturbation.perturb_opts['punctuation']
-                ) for idx_feature in result['positions']
-            ]
-        else:
-            result['names'] = [self.perturbation.words[x] for x in result['feature']]
-            result['positions'] = [self.perturbation.positions[x] for x in result['feature']]
+        # if self.sampling_strategy == self.SAMPLING_LANGUAGE_MODEL:
+        #     # take the whole word (this points just to the first part of the word)
+        #     result['positions'] = [self.perturbation.ids_mapping[i] for i in result['feature']]
+        #     result['names'] = [
+        #         self.perturbation.model.select_word(
+        #             self.perturbation.head_tokens,
+        #             idx_feature,
+        #             self.perturbation.perturb_opts['punctuation']
+        #         ) for idx_feature in result['positions']
+        #     ]
+        # else:
+            # result['names'] = [self.perturbation.words[x] for x in result['feature']]
+            # result['positions'] = [self.perturbation.positions[x] for x in result['feature']]
 
         # set mab
         self.mab = mab
@@ -519,10 +544,18 @@ class AnchorText(Explainer):
 
         # output explanation dictionary
         data = copy.deepcopy(DEFAULT_DATA_ANCHOR)
-        data.update(anchor=exp.names(),
-                    precision=exp.precision(),
-                    coverage=exp.coverage(),
-                    raw=exp.exp_map)
+        # data.update(anchor=text,
+        #             precision=exp.precision(),
+        #             coverage=exp.coverage(),
+        #             raw=exp.exp_map)
+        data.update(
+            dfa=exp.exp_map['DFA'],
+            training_accuracy=exp.exp_map['training_accuracy'],
+            testing_accuracy=exp.exp_map['testing_accuracy'],
+            coverage=exp.coverage(),
+            state=exp.exp_map['size'],
+            raw=exp.exp_map,
+        )
 
         # create explanation object
         explanation = Explanation(meta=copy.deepcopy(self.meta), data=data)

@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 
 from tqdm import tqdm
 from typing import List, Dict, Callable, Union, Tuple, Optional
-from modified_modules.models.pytorch.metrics import Metric, LossContainer
+from modified_modules.alibi.models.pytorch.metrics import Metric, LossContainer
 
 
 class Model(nn.Module):

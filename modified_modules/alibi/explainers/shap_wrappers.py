@@ -22,8 +22,8 @@ from modified_modules.alibi.utils.wrappers import methdispatch
 if TYPE_CHECKING:
     from modified_modules.alibi.utils.distributed import DistributedExplainer
     import catboost  # noqa F401
-else:
-    from modified_modules.utils import DistributedExplainer
+# else:
+    # from modified_modules.utils import DistributedExplainer
 
 logger = logging.getLogger(__name__)
 
