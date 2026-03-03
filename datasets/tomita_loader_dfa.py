@@ -1,60 +1,7 @@
 
-import random
-# from typing import List, Tuple, Callable, Dict
 import numpy as np
 
-# def _repeat_block(block, repeats):
-#     return block * repeats
-
-# def _rand_block(block_len, distinct):
-#     # distinct=1: all a or all b; distinct=2: a,b
-#     if distinct==1:
-#         c = np.random.choice(['a','b'])
-#         return [c]*block_len
-#     else:
-#         return np.random.permutation(['a','b']* ((block_len+1)//2))[:block_len].tolist()
-
-# def _rand_seq(l):
-#     return np.random.choice(['a','b','c','d'], l).tolist()
-
-# def _make_pattern(block, repeats):
-#     return block*repeats
-
-# def _make_neg_pattern(block, repeats):
-#     seq = block*repeats
-#     if seq:
-#         seq[0] = 'a' if seq[0]=='b' else 'b'
-#     return seq
-
-# def _even(n):
-#     return n%2==0
-
-# def _odd(n):
-#     return n%2==1
-
-# def _mod(n, m):
-#     return n%m==0
-
-# def _make_block(n, c):
-#     return [c]*n
-
-# def _make_abab(n):
-#     return ['a','b']*(n//2)
-
-# def _to_ab(seq):
-#     if isinstance(seq, np.ndarray):
-#         seq = seq.tolist()
-#     if seq is None or len(seq) == 0:
-#         return []
-#     if isinstance(seq[0], int):
-#         return ['a' if x == 0 else 'b' for x in seq]
-#     return [str(x) for x in seq]
-
 class L1:
-    # Accepts only constant sequences (all symbols the same). Works for any alphabet.
-    # def check(self, lst):
-    #     s = _to_ab(lst)
-    #     return all(x == s[0] for x in s)
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
         alphabet = ['a','b','c','d']
@@ -80,14 +27,6 @@ class L1:
         return pos, neg
 
 class L2:
-    # Accepts only strings of the form (abcd)* (i.e., a,b,c,d,a,b,c,d,...)
-    # def check(self, lst):
-    #     if len(lst) % 4 != 0:
-    #         return False
-    #     for i in range(0, len(lst), 4):
-    #         if lst[i:i+4] != ['a','b','c','d']:
-    #             return False
-    #     return True
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
         alphabet = ['a','b','c','d']
@@ -110,15 +49,6 @@ class L2:
         return pos, neg
 
 class L2A:
-    # Accepts only strings where every block of 2 symbols is the same (e.g., aa, bb, cc, dd, ...).
-    # def check(self, lst):
-    #     s = lst
-    #     if len(s)%2 != 0:
-    #         return False
-    #     for i in range(0, len(s), 2):
-    #         if not all(x==s[i] for x in s[i:i+2]):
-    #             return False
-    #     return True
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
         alphabet = ['a','b','c','d']
@@ -141,15 +71,6 @@ class L2A:
         return pos, neg
 
 class L2AB:
-    # Accepts only strings of the form (abcd abcd ...)*.
-    # def check(self, lst):
-    #     s = _to_ab(lst)
-    #     if len(s)%4!=0:
-    #         return False
-    #     for i in range(0,len(s),4):
-    #         if not (s[i]=='a' and s[i+1]=='b' and s[i+2]=='a' and s[i+3]=='b'):
-    #             return False
-    #     return True
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
         alphabet = ['a','b','c','d']
@@ -171,12 +92,6 @@ class L2AB:
         return pos, neg
     
 class L3:
-    # Accepts strings where the count of 'a' is odd and 'b' is even, or vice versa.
-    # def check(self, lst):
-    #     s = _to_ab(lst)
-    #     ca = s.count('a')
-    #     cb = s.count('b')
-    #     return (ca%2==1 and cb%2==0) or (cb%2==1 and ca%2==0)
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
         # alphabet = ['a','b','c','d']
@@ -234,21 +149,12 @@ class L3A:
         return pos, neg
 
 class L3AB:
-    # Accepts only strings of the form (abcd abcd abcd)*.
-    # def check(self, lst):
-    #     s = _to_ab(lst)
-    #     if len(s)%6!=0:
-    #         return False
-    #     for i in range(0,len(s),6):
-    #         if not (s[i]=='a' and s[i+1]=='b' and s[i+2]=='a' and s[i+3]=='b' and s[i+4]=='a' and s[i+5]=='b'):
-    #             return False
-    #     return True
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
         alphabet = ['a','b','c','d']
         for _ in range(num_pos):
             r = np.random.randint(1, max_length//6+1)
-            pos.append(['a','b','c','d','a','b','c','d']*r)
+            pos.append(['a','b','c','d','a','b','c','d','a','b','c','d']*r)
         for _ in range(num_neg):
             l = np.random.randint(6, max_length+1)
             seq = np.random.choice(alphabet, l).tolist()
@@ -264,53 +170,35 @@ class L3AB:
         return pos, neg
     
 class L4:
-    # Accepts strings with no three consecutive identical symbols.
-    # def check(self, lst):
-    #     s = _to_ab(lst)
-    #     for i in range(len(s)-2):
-    #         if s[i] == s[i+1] == s[i+2]:
-    #             return False
-    #     return True
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
         alphabet = ['a','b','c','d']
-        for _ in range(num_pos):
-            l = np.random.randint(3, max_length+1)
+        # ----- Positive -----
+        while len(pos) < num_pos:
+            length = np.random.randint(3, max_length + 1)
             seq = []
-            for _ in range(l):
-                if len(seq)>=2 and seq[-1]==seq[-2]:
-                    c = np.random.choice([x for x in alphabet if x != seq[-1]])
+            for _ in range(length):
+                if len(seq) >= 2 and seq[-1] == seq[-2]:
+                    choices = [x for x in alphabet if x != seq[-1]]
+                    seq.append(np.random.choice(choices))
                 else:
-                    c = np.random.choice(alphabet)
-                seq.append(c)
+                    seq.append(np.random.choice(alphabet))
             pos.append(seq)
-        for _ in range(num_neg):
-            l = np.random.randint(3, max_length+1)
-            seq = np.random.choice(alphabet, l).tolist()
-            if any(seq[i]==seq[i+1]==seq[i+2] for i in range(l-2)):
-                neg.append(seq)
-            else:
-                for j in range(min(3, l)):
-                    seq[j] = np.random.choice([x for x in alphabet if x != seq[j]])
-                neg.append(seq)
-        def to_str_list(seq):
-            if isinstance(seq, tuple):
-                return [str(x) for x in seq]
-            return [str(x) for x in list(seq)]
-        pos = [to_str_list(seq) for seq in pos]
-        neg = [to_str_list(seq) for seq in neg]
+
+        # ----- Negative -----
+        while len(neg) < num_neg:
+            length = np.random.randint(3, max_length + 1)
+            seq = np.random.choice(alphabet, length).tolist()
+
+            # 強制插入 triple
+            pos_insert = np.random.randint(0, length - 2)
+            symbol = np.random.choice(alphabet)
+            seq[pos_insert:pos_insert+3] = [symbol]*3
+
+            neg.append(seq)
         return pos, neg
     
 class L4A:
-    # Accepts only strings where every block of 4 symbols is the same.
-    # def check(self, lst):
-    #     s = _to_ab(lst)
-    #     if len(s)%4!=0:
-    #         return False
-    #     for i in range(0,len(s),4):
-    #         if not all(x==s[i] for x in s[i:i+4]):
-    #             return False
-    #     return True
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
         alphabet = ['a', 'b', 'c', 'd']
@@ -333,15 +221,6 @@ class L4A:
         return pos, neg
     
 class L4AB:
-    # Accepts only strings of the form (abcd abcd abcd abcd)*.
-    # def check(self, lst):
-    #     s = _to_ab(lst)
-    #     if len(s)%8!=0:
-    #         return False
-    #     for i in range(0,len(s),8):
-    #         if not (s[i]=='a' and s[i+1]=='b' and s[i+2]=='a' and s[i+3]=='b' and s[i+4]=='a' and s[i+5]=='b' and s[i+6]=='a' and s[i+7]=='b'):
-    #             return False
-    #     return True
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
         alphabet = ['a','b','c','d']
@@ -363,29 +242,34 @@ class L4AB:
         return pos, neg
 
 class L5:
-    # Accepts strings where the count of 'a' and 'b' are both even. Only for a,b alphabet. NOT for 4-symbol alphabet.
-    # def check(self, lst):
-    #     s = _to_ab(lst)
-    #     ca = s.count('a')
-    #     cb = s.count('b')
-    #     return _even(ca) and _even(cb)
+    # Accepts strings where the count of 'a' and 'b' are both even.
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
-        alphabet = ['a','b','c','d']
         for _ in range(num_pos):
-            ca = 2*np.random.randint(1,5)
-            cb = 2*np.random.randint(1,5)
-            rest = np.random.randint(0, 3)
-            seq = ['a']*ca + ['b']*cb + [np.random.choice(['c','d']) for _ in range(rest)]
-            np.random.shuffle(seq)
-            pos.append(seq)
+            # Both ca and cb are even, and ca + cb <= max_length
+            ca = 2 * np.random.randint(1, max(2, max_length // 2))
+            max_cb = (max_length - ca) // 2
+            cb = 2 * np.random.randint(1, max(2, max_cb + 1))
+            if ca + cb <= max_length:
+                seq = ['a']*ca + ['b']*cb
+                np.random.shuffle(seq)
+                pos.append(seq)
         for _ in range(num_neg):
-            ca = 2*np.random.randint(1,5)+1
-            cb = 2*np.random.randint(1,5)
-            rest = np.random.randint(0, 3)
-            seq = ['a']*ca + ['b']*cb + [np.random.choice(['c','d']) for _ in range(rest)]
-            np.random.shuffle(seq)
-            neg.append(seq)
+            # One of ca or cb is odd, and ca + cb <= max_length
+            if np.random.rand() < 0.5:
+                # ca is odd, cb is even
+                ca = 2*np.random.randint(0, max_length // 2) + 1
+                max_cb = (max_length - ca) // 2
+                cb = 2 * np.random.randint(1, max(2, max_cb + 1)) if max_cb >= 1 else 0
+            else:
+                # ca is even, cb is odd
+                ca = 2 * np.random.randint(1, max(2, max_length // 2))
+                max_cb = (max_length - ca - 1) // 2
+                cb = 2 * np.random.randint(0, max(1, max_cb + 1)) + 1
+            if ca > 0 and cb > 0 and ca + cb <= max_length:
+                seq = ['a']*ca + ['b']*cb
+                np.random.shuffle(seq)
+                neg.append(seq)
         def to_str_list(seq):
             if isinstance(seq, tuple):
                 return [str(x) for x in seq]
@@ -396,14 +280,6 @@ class L5:
 
 class L5A:
     # Accepts only strings where every block of 5 symbols is the same. Works for any alphabet.
-    # def check(self, lst):
-    #     s = _to_ab(lst)
-    #     if len(s)%5!=0:
-    #         return False
-    #     for i in range(0,len(s),5):
-    #         if not all(x==s[i] for x in s[i:i+5]):
-    #             return False
-    #     return True
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
         alphabet = ['a','b','c','d']
@@ -427,14 +303,6 @@ class L5A:
     
 class L5AB:
     # Accepts only strings of the form (ab ab ab ab ab)*. Only works for a,b alphabet. NOT for 4-symbol alphabet.
-    # def check(self, lst):
-    #     s = _to_ab(lst)
-    #     if len(s)%10!=0:
-    #         return False
-    #     for i in range(0,len(s),10):
-    #         if not (s[i]=='a' and s[i+1]=='b' and s[i+2]=='a' and s[i+3]=='b' and s[i+4]=='a' and s[i+5]=='b' and s[i+6]=='a' and s[i+7]=='b' and s[i+8]=='a' and s[i+9]=='b'):
-    #             return False
-    #     return True
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
         alphabet = ['a','b','c','d']
@@ -463,47 +331,44 @@ class L5AB:
         return pos, neg
 
 class L6:
-    # Accepts strings where |#a - #b| mod 3 == 0. Only for a,b alphabet. NOT for 4-symbol alphabet.
-    # def check(self, lst):
-    #     s = _to_ab(lst)
-    #     ca = s.count('a')
-    #     cb = s.count('b')
-    #     return _mod(abs(ca-cb),3)
+    # Accepts strings where |#a - #b| mod 3 == 0, i.e., #a ≡ #b (mod 3).
+    # Sequences may contain 'c' and 'd' as noise, but rule only checks 'a' and 'b'.
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
-        alphabet = ['a','b','c','d']
-        for _ in range(num_pos):
-            ca = 3*np.random.randint(1,5)
-            cb = ca + 3*np.random.randint(0,3)
-            rest = np.random.randint(0, 3)
-            seq = ['a']*ca + ['b']*cb + [np.random.choice(['c','d']) for _ in range(rest)]
+        alphabet_noise = ['c', 'd']
+
+        def random_seq_with_counts(ca, cb, length):
+            seq = ['a'] * ca + ['b'] * cb
+            remaining = length - len(seq)
+            if remaining > 0:
+                seq += np.random.choice(alphabet_noise, remaining).tolist()
             np.random.shuffle(seq)
-            pos.append(seq)
-        for _ in range(num_neg):
-            ca = 3*np.random.randint(1,5)+1
-            cb = ca + 3*np.random.randint(0,3)
-            rest = np.random.randint(0, 3)
-            seq = ['a']*ca + ['b']*cb + [np.random.choice(['c','d']) for _ in range(rest)]
-            np.random.shuffle(seq)
-            neg.append(seq)
-        def to_str_list(seq):
-            if isinstance(seq, tuple):
-                return [str(x) for x in seq]
-            return [str(x) for x in list(seq)]
-        pos = [to_str_list(seq) for seq in pos]
-        neg = [to_str_list(seq) for seq in neg]
+            return seq
+
+        # ----- Positive -----
+        while len(pos) < num_pos:
+            length = np.random.randint(1, max_length + 1)
+
+            ca = np.random.randint(0, length + 1)
+            cb = np.random.randint(0, length - ca + 1)
+
+            if (ca - cb) % 3 == 0:
+                pos.append(random_seq_with_counts(ca, cb, length))
+
+        # ----- Negative -----
+        while len(neg) < num_neg:
+            length = np.random.randint(1, max_length + 1)
+
+            ca = np.random.randint(0, length + 1)
+            cb = np.random.randint(0, length - ca + 1)
+
+            if (ca - cb) % 3 != 0:
+                neg.append(random_seq_with_counts(ca, cb, length))
+
         return pos, neg
 
 class L6A:
     # Accepts only strings where every block of 6 symbols is the same. Works for any alphabet.
-    # def check(self, lst):
-    #     s = _to_ab(lst)
-    #     if len(s)%6!=0:
-    #         return False
-    #     for i in range(0,len(s),6):
-    #         if not all(x==s[i] for x in s[i:i+6]):
-    #             return False
-    #     return True
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
         alphabet = ['a','b','c','d']
@@ -526,48 +391,43 @@ class L6A:
         return pos, neg
 
 class L7:
-    # Accepts strings of the form a^n b^m a^k b^l. Only for a,b alphabet. NOT for 4-symbol alphabet.
-    # def check(self, lst):
-    #     s = _to_ab(lst)
-    #     i = 0
-    #     n = len(s)
-    #     while i<n and s[i]=='a': i+=1
-    #     while i<n and s[i]=='b': i+=1
-    #     while i<n and s[i]=='a': i+=1
-    #     while i<n and s[i]=='b': i+=1
-    #     return i==n
+    # Accepts strings where a/b sequence is a*b*a*b* (ignoring c/d noise).
+    # Positive examples: pure a/b in a*b*a*b* structure (no c/d)
+    # Negative examples: may contain c/d noise
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
-        alphabet = ['a','b','c','d']
+
         for _ in range(num_pos):
-            l1 = np.random.randint(1, max_length//4+1)
-            l2 = np.random.randint(1, max_length//4+1)
-            l3 = np.random.randint(1, max_length//4+1)
-            l4 = np.random.randint(1, max_length//4+1)
-            seq = ['a']*l1 + ['b']*l2 + ['a']*l3 + ['b']*l4
+            l1 = np.random.randint(1, max_length//4)
+            l2 = np.random.randint(1, max_length//4)
+            l3 = np.random.randint(1, max_length//4)
+            l4 = np.random.randint(1, max_length//4)
+
+            base = ['a']*l1 + ['b']*l2 + ['a']*l3 + ['b']*l4
+            
+            # 插入 noise
+            seq = []
+            for s in base:
+                seq.append(s)
+                if np.random.rand() < 0.2:
+                    seq.append(np.random.choice(['c','d']))
+            
             pos.append(seq)
+
         for _ in range(num_neg):
-            l = np.random.randint(4, max_length+1)
-            seq = np.random.choice(alphabet, l).tolist()
+            # 專門破壞 phase
+            l1 = np.random.randint(1, max_length//4)
+            l2 = np.random.randint(1, max_length//4)
+            l3 = np.random.randint(1, max_length//4)
+
+            seq = ['a']*l1 + ['b']*l2 + ['a']*l3 + ['b']*l2 + ['a']  # extra a
+
             neg.append(seq)
-        def to_str_list(seq):
-            if isinstance(seq, tuple):
-                return [str(x) for x in seq]
-            return [str(x) for x in list(seq)]
-        pos = [to_str_list(seq) for seq in pos]
-        neg = [to_str_list(seq) for seq in neg]
+
         return pos, neg
 
 class L7A:
-    # Accepts only strings where every block of 7 symbols is the same. Works for any alphabet.
-    # def check(self, lst):
-    #     s = _to_abcd(lst)
-    #     if len(s)%7!=0:
-    #         return False
-    #     for i in range(0,len(s),7):
-    #         if not all(x==s[i] for x in s[i:i+7]):
-    #             return False
-    #     return True
+    # Accepts only strings where every block of 7 symbols is the same.
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
         alphabet = ['a','b','c','d']
@@ -590,15 +450,7 @@ class L7A:
         return pos, neg
     
 class L8A:
-    # Accepts only strings where every block of 8 symbols is the same. Works for any alphabet.
-    # def check(self, lst):
-    #     s = _to_ab(lst)
-    #     if len(s)%8!=0:
-    #         return False
-    #     for i in range(0,len(s),8):
-    #         if not all(x==s[i] for x in s[i:i+8]):
-    #             return False
-    #     return True
+    # Accepts only strings where every block of 8 symbols is the same.
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
         alphabet = ['a','b','c','d']

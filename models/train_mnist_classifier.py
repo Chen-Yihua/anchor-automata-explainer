@@ -17,9 +17,8 @@ for path in [MODIFIED_MODULES, SRC_PATH, EXTERNAL_MODULES, EXPLAINING_FA, INTERP
         sys.path.insert(0, path)
 
 import numpy as np
-from sklearn.model_selection import train_test_split
 from datasets.mnist_stroke_loader import load_mnist_stroke_sequences
-from models.sequence_classifier import SimpleSequenceClassifier
+from models.sequence_classifier import SequenceClassifier
 from sklearn.metrics import accuracy_score
 
 
@@ -58,14 +57,14 @@ def main():
     print("=" * 60)
     
     # Load dataset
-    min_segments=10    
-    max_segments = 15
-    print(f"\nLoading MNIST stroke sequences (min_segments={min_segments}, max_segments={max_segments})...")
+    min_points_per_segment = 3    
+    max_points_per_segment = 5
+    print(f"\nLoading MNIST stroke sequences (每段{min_points_per_segment}-{max_points_per_segment}個點)...")
     X_train, X_test, y_train, y_test = load_mnist_stroke_sequences(
         discretize_mode="raw_xy",
         allow_segment=True,
-        min_segments=min_segments,
-        max_segments=max_segments
+        min_segments=min_points_per_segment,
+        max_segments=max_points_per_segment
     )
     
     # Convert to numpy arrays
@@ -92,9 +91,11 @@ def main():
     print(f"  Min: {min(lengths)}, Max: {max(lengths)}, Mean: {np.mean(lengths):.1f}")
     
     # Create and train classifier
+    max_sequence_length = 20
     print("\nTraining classifier...")
-    clf = SimpleSequenceClassifier(
-        max_len=max_segments,
+    clf = SequenceClassifier(
+        model_type='rnn',
+        max_len=max_sequence_length,
         embedding_dim=64,
         rnn_units=256,
         num_layers=2,

@@ -183,10 +183,14 @@ def load_mnist_stroke_sequences(
             # seq: [(dx, dy, pen), ...]
             seq = seq[1:]
 
-            # 決定本序列的 n_segments
+            # 決定本序列要分幾段
+            seq_len = len(seq)
             seg_len = n_segments
             if min_segments is not None and max_segments is not None:
-                seg_len = random.randint(min_segments, max_segments)
+                # min_segments 和 max_segments 表示"每段應該有多少個點"
+                max_segs = max(1, seq_len // min_segments)  
+                min_segs = max(1, seq_len // max_segments) 
+                seg_len = random.randint(min_segs, max_segs)
 
             if allow_segment:
                 # 分段取平均方向
@@ -209,20 +213,4 @@ def load_mnist_stroke_sequences(
             y.append(digit)
 
     return train_test_split(X, y, test_size=0.2, random_state=42)
-
-
-# def get_alphabet(discretize_mode):
-#     """
-#     根據離散化模式回傳對應的 alphabet
-#     """
-#     if discretize_mode == "4dir":
-#         return [0, 1, 2, 3, 4]  # R, L, U, D, stay
-#     elif discretize_mode == "4dir_pen":
-#         return list(range(10))  # 0-4 pen_down, 5-9 pen_up
-#     elif discretize_mode == "8dir":
-#         return list(range(8))   # 8 directions
-#     elif discretize_mode == "8dir_pen":
-#         return list(range(16))  # 8 directions × 2 pen states
-#     else:
-#         raise ValueError(f"Unknown mode: {discretize_mode}")
 
