@@ -8,7 +8,7 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 import numpy as np
 from datasets.og_loader import OGD2
 from learner.dfa_learner import make_dfa_complete, trim_dfa
-from automaton.utils import plot_dfa_beam_stats
+from automaton.utils import plot_beam_stats, plot_dfa_beam_stats
 from modified_modules.alibi.utils.distributions import kl_bernoulli
 from learner import AUTO_INSTANCE
 
@@ -680,7 +680,7 @@ class AnchorBaseBeam:
         origin_automata = AUTO_INSTANCE.create_init_automata(type, positive_samples, negative_samples)
         self.automatas = [origin_automata]
         self.testing_data = inti_samples
-
+        
         # sample by default 1 or min_samples_start more random value(s)
         (true_accept,), (false_reject,), (total,), (accepted,) = self.draw_samples([self.automatas[0]], min_samples_start)
 
@@ -727,18 +727,15 @@ class AnchorBaseBeam:
             }
         
         best_of_size = {} # each round
-        all_history = []         # 所有候選自動機的紀錄
+        all_history = [] # 所有候選自動機的紀錄
     
         # find best result using beam search
         while True:
             print("======================================")
             print("Beam Search Iteration:", self.iteration)
-            # if self.iteration > 100:
-            #     print("Max iterations reached. Stopping.")
-            #     break
 
             # create new candidate anchors by adding features to current best anchors
-            automatas = AUTO_INSTANCE.propose_automata(self.automatas, self.state, self.sample_fcn, self.iteration, best_of_size.get(self.iteration, []), self.type, beam_size)
+            automatas = AUTO_INSTANCE.propose_automata(self.automatas, self.state, self.iteration, best_of_size.get(self.iteration, []), output_dir, beam_size)
 
             # if no better coverage found with added features -> break
             if len(automatas) == 0:
@@ -817,12 +814,13 @@ class AnchorBaseBeam:
 
                 # Skip candidates with no reachable accepting state (invalid DFA)
                 if automaton_type == "DFA" and not any(s.is_accepting for s in automata.states):
-                    print(f"  [SKIP] Candidate {id(automata)} has no reachable accepting state, excluding from history.")
+                    print(f"  [SKIP] Candidate {id(automata)} has no accepting state (after cleanup), excluding from history.")
                     continue
 
-                # 最少需要2個狀態，避免trivial單狀態自動機
+                # at least need two states to avoid trivial single-state automaton
                 min_states = 2
                 if states < min_states:
+                    print(f"  [SKIP] Candidate {id(automata)} has {states} states (< {min_states}), excluding from history.")
                     continue
 
                 record = {
@@ -832,6 +830,7 @@ class AnchorBaseBeam:
                     "states": states,
                 }
                 all_history.append(record)
+                print(f"  [HISTORY] Added: states={states}, accuracy={m:.4f}, id={id(automata)}")
 
             if verbose:
                 for i, mean, lb, ub in zip(candidate_automatas, means, lbs, ubs):
@@ -858,31 +857,34 @@ class AnchorBaseBeam:
             print("Initial testing accuracy : ",iteration_stats[0]["testing_accuracies"])
             print("Initial number of states : ",iteration_stats[0]["states"])
             if(automaton_type == "DFA"):
-                AUTO_INSTANCE.automaton_to_graphviz(origin_automata, output_dir=output_dir)
+                AUTO_INSTANCE.automaton_to_graphviz(origin_automata, filename="initial_automata",output_dir=output_dir)
             if automaton_type == "RA":
-                AUTO_INSTANCE.automaton_to_graphviz(origin_automata, filename="origin_automata", output_dir=output_dir)
+                AUTO_INSTANCE.automaton_to_graphviz(origin_automata, filename="initial_automata", output_dir=output_dir)
 
             plot_dfa_beam_stats(iteration_stats, beam_size, output_dir=output_dir)
 
-        # ====== 根據使用者指定的 select_by 決定回傳策略 ======
+        # according to the select_by strategy, pick the best candidate from all_history and do final cleanup before returning metadata
         def _cleanup_and_return(best_record, success, label=""):
-            """統一的 cleanup + return 邏輯"""
             automata = best_record["automata"]
             if automaton_type == "RA":
                 print(f"\n[FINAL CLEANUP] Cleaning up {label} RA before returning...")
-                AUTO_INSTANCE._remove_unreachable_states(automata, verbose=True)
+                AUTO_INSTANCE._remove_unreachable_states(automata)
                 for state_node in list(automata.states):
                     if state_node in automata.transitions:
                         AUTO_INSTANCE._dedup_outgoing(automata, state_node, verbose=True)
                 AUTO_INSTANCE.automaton_to_graphviz(automata, filename="final_automata", output_dir=output_dir)
             elif automaton_type == "DFA":
-                print(f"\n[FINAL CLEANUP] Cleaning up {label} DFA before returning...")
+                print(f"\n[FINAL CLEANUP] Verifying {label} DFA before returning (should already be cleaned)...")
+                n_states_before = len(automata.states)
                 from learner.dfa_learner import remove_unreachable_states
                 remove_unreachable_states(automata)
                 n_states_after = len(automata.states)
                 has_accept = any(s.is_accepting for s in automata.states)
+                if n_states_before != n_states_after:
+                    print(f"  WARNING: States reduced from {n_states_before} to {n_states_after} (should be same!)")
                 print(f"  States after cleanup: {n_states_after}, has accepting state: {has_accept}")
-                AUTO_INSTANCE.automaton_to_graphviz(automata, output_dir=output_dir)
+                AUTO_INSTANCE.automaton_to_graphviz(automata, filename="final_automata", instance=self.sample_fcn.instance, output_dir=output_dir)
+            return self.get_automata_metadata(automata, success=success, batch_size=batch_size)
             return self.get_automata_metadata(automata, success=success, batch_size=batch_size)
 
         print(f"\n[SELECT] select_by='{select_by}', accuracy_threshold={accuracy_threshold}, state_threshold={state_threshold}")
@@ -890,8 +892,7 @@ class AnchorBaseBeam:
 
         if all_history:
             if select_by == "accuracy":
-                # ===== 模式 1: 以 accuracy_threshold 為主 =====
-                # 找精確度 >= accuracy_threshold 的候選，從中選狀態數最小的
+                # mode 1: prioritize accuracy_threshold - find candidates meeting accuracy threshold, then pick smallest state count
                 qualified = [r for r in all_history if r["accuracy"] >= accuracy_threshold]
                 if qualified:
                     best = min(qualified, key=lambda x: x["states"])
@@ -899,15 +900,14 @@ class AnchorBaseBeam:
                     print(f"  Selected: states={best['states']}, accuracy={best['accuracy']:.4f}")
                     return _cleanup_and_return(best, success=True, label="qualified(accuracy)")
                 else:
-                    # 沒有任何候選達到 accuracy_threshold → 回傳精確度最高的 (best-effort)
+                    # if no candidates meet accuracy threshold, fallback to best-effort: pick candidate with highest accuracy regardless of state count
                     best = max(all_history, key=lambda x: x["accuracy"])
                     print(f"  [accuracy mode] No candidate meets accuracy >= {accuracy_threshold}.")
                     print(f"  Best-effort: states={best['states']}, accuracy={best['accuracy']:.4f}")
                     return _cleanup_and_return(best, success=False, label="best-effort(accuracy)")
 
             elif select_by == "state":
-                # ===== 模式 2: 以 state_threshold 為主 =====
-                # 找狀態數 <= state_threshold 的候選，從中選精確度最高的
+                # mode 2: prioritize state_threshold - find candidates meeting state count threshold, then pick highest accuracy
                 under_state = [r for r in all_history if r["states"] <= state_threshold]
                 if under_state:
                     best = max(under_state, key=lambda x: x["accuracy"])
@@ -915,7 +915,7 @@ class AnchorBaseBeam:
                     print(f"  Selected: states={best['states']}, accuracy={best['accuracy']:.4f}")
                     return _cleanup_and_return(best, success=True, label="qualified(state)")
                 else:
-                    # 沒有任何候選的狀態數 <= state_threshold → 回傳精確度最高的 (best-effort)
+                    # if no candidates meet state count threshold, fallback to best-effort: pick candidate with highest accuracy regardless of state count
                     best = max(all_history, key=lambda x: x["accuracy"])
                     print(f"  [state mode] No candidate has states <= {state_threshold}.")
                     print(f"  Best-effort: states={best['states']}, accuracy={best['accuracy']:.4f}")
@@ -923,7 +923,7 @@ class AnchorBaseBeam:
             else:
                 raise ValueError(f"Unknown select_by='{select_by}'. Use 'accuracy' or 'state'.")
 
-        # Safety fallback: 沒有任何候選產生，回傳初始自動機
+        # Safety fallback: if there are no candidates at all (should not happen since we start with initial automaton), return initial automaton metadata
         print("\n[SELECT] No candidates generated during beam search. Returning initial automaton.")
         if automaton_type == "RA":
             print("\n[FINAL CLEANUP] Cleaning up fallback RA before returning...")
@@ -931,4 +931,6 @@ class AnchorBaseBeam:
             for state in list(origin_automata.states):
                 if state in origin_automata.transitions:
                     AUTO_INSTANCE._dedup_outgoing(origin_automata, state, verbose=True)
+        
+        plot_beam_stats(iteration_stats, beam_size, output_dir=output_dir, show=False)
         return self.get_automata_metadata(origin_automata, success=False, batch_size=batch_size)

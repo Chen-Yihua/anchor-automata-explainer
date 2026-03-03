@@ -18,8 +18,7 @@ from datasets.og_loader import OGD1, OGD2, OGD3, OGD4, OGD5
 import numpy as np
 import time
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import LabelBinarizer
+from models.sequence_classifier import SequenceClassifier
 
 np.random.seed(42)
 random.seed(42)
@@ -67,8 +66,6 @@ for lang_name, lang_class in LANGUAGES.items():
 
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         alphabet = ['a', 'b', 'c']
-        char2idx = {c: i+1 for i, c in enumerate(alphabet)}
-        pad_idx = 0
 
         def encode_seq(seq):
             # Accepts list, numpy array, or float/int
@@ -79,82 +76,44 @@ for lang_name, lang_class in LANGUAGES.items():
                 if isinstance(c, (float, np.floating, int, np.integer)):
                     # Map 0,1,2 to a,b,c
                     if int(c) == 0:
-                        out.append(char2idx['a'])
+                        out.append('a')
                     elif int(c) == 1:
-                        out.append(char2idx['b'])
+                        out.append('b')
                     elif int(c) == 2:
-                        out.append(char2idx['c'])
+                        out.append('c')
                     else:
                         raise ValueError(f'Unknown value: {c}')
                 elif isinstance(c, str):
-                    out.append(char2idx[c])
+                    out.append(c)
                 else:
                     raise ValueError(f'Unknown type: {type(c)}')
             return out
 
-        def pad_sequences(seqs):
-            seqs = [s if len(s) > 0 else [pad_idx] for s in seqs]
-            maxlen = max(len(s) for s in seqs)
-            return [s + [pad_idx]*(maxlen-len(s)) for s in seqs], [len(s) for s in seqs]
+        # Convert X_train and X_test using encode_seq
+        X_train_encoded = [encode_seq(s) for s in X_train]
+        X_test_encoded = [encode_seq(s) for s in X_test]
 
-        class SeqDataset(Dataset):
-            def __init__(self, X, y):
-                self.X = [encode_seq(s) for s in X]
-                self.y = y
-            def __len__(self):
-                return len(self.X)
-            def __getitem__(self, idx):
-                return torch.tensor(self.X[idx], dtype=torch.long), torch.tensor(self.y[idx], dtype=torch.float32)
-
-        from models.simple_sequence_classifier import SimpleSequenceClassifier
-
-        train_dataset = SeqDataset(X_train, y_train)
-        test_dataset = SeqDataset(X_test, y_test)
-        def collate_fn(batch):
-            xs = [b[0] for b in batch]
-            ys = [b[1] for b in batch]
-            lengths = torch.tensor([len(x) for x in xs], dtype=torch.long)
-            xs_padded = nn.utils.rnn.pad_sequence(xs, batch_first=True, padding_value=pad_idx)
-            ys = torch.stack(ys)
-            return xs_padded, ys, lengths
-        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, collate_fn=collate_fn)
-        test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, collate_fn=collate_fn)
-
-        model_rnn = SimpleSequenceClassifier(vocab_size=len(alphabet)+1).to(device)
-        optimizer = optim.Adam(model_rnn.parameters(), lr=0.01)
-        criterion = nn.BCEWithLogitsLoss()
-
-        for epoch in range(50):
-            model_rnn.train()
-            for xb, yb, lb in train_loader:
-                xb, yb, lb = xb.to(device), yb.to(device), lb.to(device)
-                mask = lb > 0
-                if not torch.all(mask):
-                    xb = xb[mask]
-                    yb = yb[mask]
-                    lb = lb[mask]
-                if xb.size(0) == 0:
-                    continue
-                optimizer.zero_grad()
-                out = model_rnn(xb, lb)
-                loss = criterion(out, yb)
-                loss.backward()
-                optimizer.step()
+        # Train classifier using new API
+        clf = SequenceClassifier(
+            model_type='rnn',
+            max_len=6,
+            embedding_dim=16,
+            rnn_units=32,
+            num_layers=1,
+            dropout=0.1,
+            weight_decay=1e-4,
+            use_attention=False,
+            device='cuda'
+        )
+        clf.fit(X_train_encoded, y_train, epochs=50, batch_size=32)
 
         def predict_rnn(X):
-            model_rnn.eval()
             # Accepts list of lists, or numpy array (n_samples, seq_len)
             if isinstance(X, np.ndarray):
                 # If shape (n, seq_len), convert to list of lists
                 X = X.tolist()
             X_enc = [encode_seq(s) for s in X]
-            X_pad, lengths = pad_sequences(X_enc)
-            xb = torch.tensor(X_pad, dtype=torch.long).to(device)
-            lb = torch.tensor(lengths, dtype=torch.long).to(device)
-            with torch.no_grad():
-                logits = model_rnn(xb, lb)
-                probs = torch.sigmoid(logits)
-                return (probs.cpu().numpy() > 0.5).astype(int)
+            return clf.predict(X_enc)
 
         train_acc = accuracy_score(y_train, predict_rnn(X_train))
         test_acc = accuracy_score(y_test, predict_rnn(X_test))

@@ -29,6 +29,19 @@ if _external_modules_path not in sys.path:
     sys.path.insert(0, _external_modules_path)
 from language.explain import Language as ExplainLanguage
 
+# 匯入優化模組
+try:
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../'))
+    from dfa_optimization import BatchPathChecker, MergeOptimizer, _cxp_cache, PerformanceMonitor
+    OPTIMIZATION_AVAILABLE = True
+    print("[INFO] DFA 優化模組已加載")
+except ImportError as e:
+    print(f"[WARNING] dfa_optimization module not found: {e}, running without optimizations")
+    OPTIMIZATION_AVAILABLE = False
+    BatchPathChecker = None
+    MergeOptimizer = None
+    _cxp_cache = None
 
 from .base import BaseAutomataLearner
 
@@ -281,7 +294,7 @@ def simplify_dfa(dfa, learn_type):
 def scar_to_aalpy_dfa(scar_dfa) -> Dfa:
     """Convert scar_rpni_size_capped_demo.DFA to aalpy.automata.Dfa"""
     id2state = {}
-    for q in sorted(scar_dfa.states):
+    for q in sorted(scar_dfa.states, key=lambda x: str(x)):
         id2state[q] = DfaState(f"s{q}", q in scar_dfa.accepting)
 
     initial = id2state[scar_dfa.start]
@@ -576,8 +589,6 @@ class DFASampler:
             )
             local_paths.append(hashable_instance)
 
-        # all_paths = list(set(local_paths))
-        # samples = [list(s) for s in all_paths]
         d_samples = local_paths
         return local_paths, d_samples
 
@@ -693,19 +704,49 @@ class DFALearner(BaseAutomataLearner):
             items.append((str(s.state_id), s.is_accepting, tuple(trans)))
         return hash(tuple(items))
     
-    def automaton_to_graphviz(self, dfa, show_sink=False, output_dir="output") -> str:
-        """Convert DFA to Graphviz DOT string and save visualization"""
+    def automaton_to_graphviz(self, dfa, filename=None, show_sink=False, instance=None, output_dir="output") -> str:
+        """
+        Convert DFA to Graphviz DOT string and save visualization.
+        
+        Parameters
+        ----------
+        dfa : Dfa
+            The DFA to visualize
+        filename : str
+            Output filename
+        show_sink : bool
+            Whether to show sink states
+        instance : list or tuple, optional
+            Original instance to highlight its path in the DFA with color
+        output_dir : str
+            Output directory
+            
+        Returns
+        -------
+        str
+            DOT content string
+        """
         import os
         os.makedirs(output_dir, exist_ok=True)
 
         def clean_state_name(name):
             name = str(name)
-            # 只允許字母、數字、底線
             return ''.join(ch if ch.isalnum() or ch == '_' else '_' for ch in name)
 
         def clean_label(label):
-            # 避免 label 有非法字元
             return str(label).replace('"', "'")
+
+        # 追踪实例的路径
+        path_edges = set()
+        if instance is not None:
+            current = dfa.initial_state
+            for i, symbol in enumerate(instance):
+                if symbol in current.transitions:
+                    next_state = current.transitions[symbol]
+                    path_edges.add((clean_state_name(current.state_id), clean_state_name(next_state.state_id), clean_label(symbol)))
+                    current = next_state
+                else:
+                    break
 
         lines = ["digraph DFA {", "  rankdir=LR;", '  node [shape=circle];']
         start_name = clean_state_name(dfa.initial_state.state_id)
@@ -724,13 +765,29 @@ class DFALearner(BaseAutomataLearner):
                     state == dfa.sink or next_state == dfa.sink
                 ):
                     continue
-                lines.append(f'  "{clean_state_name(state.state_id)}" -> "{clean_state_name(next_state.state_id)}" [label="{clean_label(symbol)}"];')
+                src_name = clean_state_name(state.state_id)
+                dst_name = clean_state_name(next_state.state_id)
+                label_name = clean_label(symbol)
+                
+                if (src_name, dst_name, label_name) in path_edges:
+                    lines.append(f'  "{src_name}" -> "{dst_name}" [label="{label_name}", color=red, penwidth=2.5, fontcolor=red];')
+                else:
+                    lines.append(f'  "{src_name}" -> "{dst_name}" [label="{label_name}"];')
 
         lines.append("}")
+        
+        # Save to file
+        dot_content = "\n".join(lines)
+        if filename:
+            dot_path = os.path.join(output_dir, filename)
+            with open(dot_path, "w") as f:
+                f.write(dot_content)
+
+        return dot_content
 
         # Save to file
         dot_content = "\n".join(lines)
-        dot_path = os.path.join(output_dir, "dfa_graph.dot")
+        dot_path = os.path.join(output_dir, filename)
         with open(dot_path, "w") as f:
             f.write(dot_content)
 
@@ -910,8 +967,8 @@ class DFALearner(BaseAutomataLearner):
 
             # Remove unreachable states before checking for accepting states
             remove_unreachable_states(new_dfa)
-
-            # check if there are still accepting states after deletion 
+            
+            # check if there are still accepting states after deletion
             if not any(st.is_accepting for st in new_dfa.states):
                 print(f"  [SKIP] Deleting {target_state.state_id} leaves no accepting state, skipping.")
                 del new_dfa, target_state, outgoing
@@ -999,73 +1056,104 @@ class DFALearner(BaseAutomataLearner):
         return True
 
 
-    def is_boundary_state(self, state_id, state_label_dist, purity_threshold=0.9):
-        dist = state_label_dist[state_id]
-        total = sum(dist.values())
-        if total == 0:
-            return False
-        return max(dist.values()) / total < purity_threshold
+    # def is_boundary_state(self, state_id, state_label_dist, purity_threshold=0.9):
+    #     dist = state_label_dist[state_id]
+    #     total = sum(dist.values())
+    #     if total == 0:
+    #         return False
+    #     return max(dist.values()) / total < purity_threshold
     
-    def collect_feasible_merge_pairs(self, dfa, state_label_dist, critical_states): 
-        """ 預先收集所有 merge feasible 的 state pair 回傳 [(s1, s2), ...] """ 
-        pairs = [] 
-        states = list(dfa.states) 
-        for s1, s2 in itertools.combinations(states, 2): 
-            if s1 == s2 or s1 == dfa.initial_state or s2 == dfa.initial_state: 
-                continue 
-            if self.check_merge_feasible_rule(s1, s2, state_label_dist, critical_states): 
-                pairs.append((s1, s2)) 
-        return pairs
+    # def collect_feasible_merge_pairs(self, dfa, state_label_dist, critical_states): 
+    #     """ 預先收集所有 merge feasible 的 state pair 回傳 [(s1, s2), ...] """ 
+    #     pairs = [] 
+    #     states = list(dfa.states) 
+    #     for s1, s2 in itertools.combinations(states, 2): 
+    #         if s1 == s2 or s1 == dfa.initial_state or s2 == dfa.initial_state: 
+    #             continue 
+    #         if self.check_merge_feasible_rule(s1, s2, state_label_dist, critical_states): 
+    #             pairs.append((s1, s2)) 
+    #     return pairs
     
-    def is_rare_but_pure_state(self, state_id, state_support, state_label_dist, rarity_threshold=0.05, purity_threshold=0.8): 
-        """ 判斷該 state 是否為「極少數但純」的 minority state。
-        - support 低於 rarity_threshold 
-        - purity 高於 purity_threshold """ 
-        total_samples = sum(state_support.values()) 
-        support = state_support[state_id] 
-        dist = state_label_dist[state_id] 
-        if total_samples == 0 or not dist: 
-            return False 
-        if support / total_samples > rarity_threshold:
-            return False 
-        if max(dist.values()) / sum(dist.values()) < purity_threshold: 
-            return False 
-        return True
+    # def is_rare_but_pure_state(self, state_id, state_support, state_label_dist, rarity_threshold=0.05, purity_threshold=0.8): 
+    #     """ 判斷該 state 是否為「極少數但純」的 minority state。
+    #     - support 低於 rarity_threshold 
+    #     - purity 高於 purity_threshold """ 
+    #     total_samples = sum(state_support.values()) 
+    #     support = state_support[state_id] 
+    #     dist = state_label_dist[state_id] 
+    #     if total_samples == 0 or not dist: 
+    #         return False 
+    #     if support / total_samples > rarity_threshold:
+    #         return False 
+    #     if max(dist.values()) / sum(dist.values()) < purity_threshold: 
+    #         return False 
+    #     return True
     
-    def collect_purity_pairs(self, dfa, data, labels, n=5):
+    def collect_merge_pairs_simple(self, dfa, data, labels, max_pairs=20):
         """
-        回傳當前 DFA 中純度最高的前 n 個節點的 unordered pair
+        簡單高效的狀態合併：只看 label 分布相似性
+        優先合併 label 分布一致的狀態
         """
         from collections import defaultdict
-        state_support = defaultdict(int)
+        
+        # 統計 label 分布
         state_label_dist = defaultdict(lambda: defaultdict(int))
-        # 統計每個 state 的 support 與 label 分布
         for seq, y in zip(data, labels):
             cur = dfa.initial_state
             for sym in seq:
                 if sym not in cur.transitions:
                     break
                 cur = cur.transitions[sym]
-            state_support[cur.state_id] += 1
             state_label_dist[cur.state_id][y] += 1
-
-        def purity(state_id):
+        
+        # 計算每個狀態的主要 label
+        def main_label(state_id):
             dist = state_label_dist[state_id]
-            total = sum(dist.values())
-            if total == 0:
-                return 0
-            return max(dist.values()) / total
-
-        # 取純度最高的 n 個 state
-        states = [s for s in dfa.states if s != dfa.initial_state]
-        state_purities = [(s, purity(s.state_id)) for s in states]
-        state_purities.sort(key=lambda x: -x[1])
-        top_states = [s for s, _ in state_purities[:n]]
-        return list(itertools.combinations(top_states, 2))
+            return max(dist, key=dist.get) if dist else None
+        
+        # 選擇 label 相同的狀態對（非常快）
+        pair_scores = []
+        for s1, s2 in itertools.combinations(dfa.states, 2):
+            if s1 == dfa.initial_state or s2 == dfa.initial_state:
+                continue
+            if s1.is_accepting != s2.is_accepting:
+                continue
+            
+            # 同類 label 優先
+            if main_label(s1.state_id) == main_label(s2.state_id):
+                pair_scores.append((1.0, s1, s2))
+            else:
+                dist1 = state_label_dist[s1.state_id]
+                dist2 = state_label_dist[s2.state_id]
+                # Jaccard 相似度
+                all_labels = set(dist1.keys()) | set(dist2.keys())
+                inter = sum(min(dist1.get(y,0), dist2.get(y,0)) for y in all_labels)
+                union = sum(max(dist1.get(y,0), dist2.get(y,0)) for y in all_labels)
+                sim = inter / union if union > 0 else 0
+                if sim > 0:
+                    pair_scores.append((sim, s1, s2))
+        
+        pair_scores.sort(reverse=True, key=lambda x: x[0])
+        
+        return [(s1, s2) for _, s1, s2 in pair_scores[:max_pairs]]
+    
+    def collect_merge_pairs_all(self, dfa, max_pairs=None):
+        """
+        嘗試所有狀態對，讓 accuracy filter 決定
+        """
+        pairs = []
+        for s1, s2 in itertools.combinations(dfa.states, 2):
+            if s1 == dfa.initial_state or s2 == dfa.initial_state:
+                continue
+            if s1.is_accepting == s2.is_accepting:
+                pairs.append((s1, s2))
+        
+        return pairs[:max_pairs] if max_pairs else pairs
 
     def _propose_merge(self, dfa, state, data, labels, seen_signatures, beam_size):
         """
         Propose new DFAs by merging pairs of states in the given DFA.
+        Uses intelligent scoring to prioritize high-impact merges.
         
         Parameters
         ----------
@@ -1086,84 +1174,19 @@ class DFALearner(BaseAutomataLearner):
             List of new DFAs created by merging states
         """
         import heapq, gc
-        heap = []
+        # heap = []
         new_dfas = []
 
-        # Precompute metadata
-        from collections import defaultdict
-        # state_support = defaultdict(int)
-        # state_label_dist = defaultdict(lambda: defaultdict(int))
-        # merge_count = defaultdict(int)
-        # MAX_MERGE_PER_STATE = 1
+        # 使用高效的多維度評分來選擇最佳合併候選對
+        feasible_pairs = self.collect_merge_pairs_simple(dfa, data, labels, max_pairs=20)
+        # feasible_pairs = [(s1, s2) for s1, s2 in itertools.combinations(list(dfa.states) , 2)]
 
-        # for seq, y in zip(data, labels): 
-        #     cur = dfa.initial_state 
-        #     for sym in seq: 
-        #         if sym not in cur.transitions: 
-        #             break 
-        #         cur = cur.transitions[sym] 
-        #     state_support[cur.state_id] += 1 
-        #     state_label_dist[cur.state_id][y] += 1 
-                
-        # # 根據樣本數自動調整 support 門檻 
-        # n_samples = len(data) 
-        # support_threshold = int(0.05 * n_samples)
-        # critical_states = { 
-        #     s for s in dfa.states 
-        #     if ( 
-        #         # Case 1: boundary state（support 高、purity 低） 
-        #         ( 
-        #             state_support[s.state_id] >= support_threshold 
-        #             and self.is_boundary_state(s.state_id, state_label_dist) 
-        #         ) 
-        #         # Case 2: rare but pure minority rule 
-        #         or self.is_rare_but_pure_state( 
-        #             s.state_id, state_support, state_label_dist 
-        #         ) 
-        #     ) 
-        # }
-
-        # # 先收集所有 feasible pairs 
-        # feasible_pairs = self.collect_feasible_merge_pairs(dfa, state_label_dist, critical_states)
-
-        # # 依 support 低、purity 高排序 
-        # def pair_score(s1, s2): 
-        #     # 合併後的 label 分布 
-        #     dist1 = state_label_dist[s1.state_id] 
-        #     dist2 = state_label_dist[s2.state_id] 
-        #     merged_dist = dist1.copy() 
-        #     for k, v in dist2.items(): 
-        #         merged_dist[k] += v 
-        #     total = sum(merged_dist.values()) 
-        #     purity = max(merged_dist.values()) / total if total > 0 else 0 
-        #     support = sum(merged_dist.values()) 
-        #     return (support, -purity) # support 越小越前面，purity 越高越前面
-
-        # feasible_pairs.sort(key=lambda p: pair_score(p[0], p[1]))
-        # merged_pairs = set()
-
-        # 收集多數樣本
-        feasible_pairs = self.collect_purity_pairs(dfa, data, labels)
-        # feasible_pairs = [
-        #     (s1, s2)
-        #     for s1 in dfa.states
-        #     for s2 in dfa.states
-        #     if s1 != s2 and s1 != dfa.initial_state and s2 != dfa.initial_state
-        # ]
+        if not feasible_pairs:
+            print("  [MERGE] 沒有找到可行的合併狀態對")
+            return new_dfas
 
         for s1, s2 in feasible_pairs:
-            # pair_key = tuple(sorted([s1.state_id, s2.state_id])) 
-            # if pair_key in merged_pairs: 
-            #     continue
-            # merged_pairs.add(pair_key)
-
-            # if merge_count[s1.state_id] >= MAX_MERGE_PER_STATE:
-            #     continue
-            # if merge_count[s2.state_id] >= MAX_MERGE_PER_STATE:
-            #     continue
-            
             # do merge
-            # new_dfa = self.clone_automaton(dfa)
             new_dfa = dfa.copy()
             s1_new = next(x for x in new_dfa.states if x.state_id == s1.state_id)
             s2_new = next(x for x in new_dfa.states if x.state_id == s2.state_id)
@@ -1196,19 +1219,6 @@ class DFALearner(BaseAutomataLearner):
                 gc.collect()
                 continue
 
-            # if isinstance(new_dfa.states, set):
-            #     new_dfa.states.discard(s2_new)
-            # else:
-            #     new_dfa.states = [st for st in new_dfa.states if st != s2_new]
-            # valid_states = set(new_dfa.states)
-            # for st in list(valid_states):
-            #     for sym, nxt in list(st.transitions.items()):
-            #         if nxt not in valid_states:
-            #             st.transitions[sym] = st
-            # if not any(st.is_accepting for st in new_dfa.states):
-            #     del new_dfa, s1_new, s2_new, valid_states, st
-            #     gc.collect()
-            #     continue
             sig = self.serialize_automaton(new_dfa)
             if sig not in seen_signatures:
                 seen_signatures.add(sig)
@@ -1217,7 +1227,7 @@ class DFALearner(BaseAutomataLearner):
             else:
                 del new_dfa, s1_new, s2_new
                 gc.collect()
-        # del candidates
+
         gc.collect()
         return new_dfas
 
@@ -1245,10 +1255,29 @@ class DFALearner(BaseAutomataLearner):
         list
             List of new DFAs created by transition modification
         """
+        from dfa_optimization import _cxp_cache
+        
+        def compute_cxp():
+            explanation_engine = ExplainLanguage()
+            return explanation_engine.explain_word(
+                "dfa_explicit.mata",
+                from_mata=True,
+                word=encoded_word,
+                ascii=encoded_word,
+                target_axp=False,
+                bootstrap_cxp_size_1=False,
+                print_exp=False,
+            )
+
         new_dfas = [dfa]  # Always include the original DFA
         
         # Find misclassified paths
-        accepts = np.array([self.check_path_accepted(dfa, p) for p in data])
+        # 批量路徑檢查
+        if OPTIMIZATION_AVAILABLE and BatchPathChecker is not None:
+            accepts = BatchPathChecker.check_paths_batch(dfa, data)
+            print(f"  [OPT-BATCH] 使用批量路徑檢查")
+        else:
+            accepts = np.array([self.check_path_accepted(dfa, p) for p in data])
         false_accept_indices = np.where((labels == 0) & (accepts == True))[0]
         true_reject_indices = np.where((labels == 1) & (accepts == False))[0]
         
@@ -1265,27 +1294,24 @@ class DFALearner(BaseAutomataLearner):
         # Get CXP explanation
         _, alphabet_map, _ = dfa_to_mata(dfa, "dfa_explicit.mata")
         encoded_word = [alphabet_map[sym] for sym in test_word if sym in alphabet_map]
-        explanation_engine = ExplainLanguage()
-        result = explanation_engine.explain_word(
-            "dfa_explicit.mata",
-            from_mata=True,
-            word=encoded_word,
-            ascii=encoded_word,
-            target_axp=False,
-            bootstrap_cxp_size_1=False,
-            print_exp=False
-        )
+        dfa_sig = self.serialize_automaton(dfa)
+        
+        # CXP 緩存
+        if OPTIMIZATION_AVAILABLE and _cxp_cache is not None:
+            result = _cxp_cache.get_cxp(dfa_sig, test_word, compute_cxp)
+            print(f"  [OPT-CXP] 使用 CXP 緩存 (快取大小: {len(_cxp_cache.cache)})")
+        else:
+            result = compute_cxp()
         cxp_raw = result.get("cxps", [])
         
         if not cxp_raw:
             print("No cxp found, skipping.")
             return new_dfas
 
-        # Create five new DFAs based on CXP
+        # Create new DFAs based on CXP
         if cxp_raw:
             min_len = min(len(seq) for seq in cxp_raw)
             cxp_raw = [seq for seq in cxp_raw if len(seq) == min_len]
-        # cxp_raw = cxp_raw[:5]
         cxp_groups = []
         for seq in cxp_raw:
             cxp_group_index = [x for x in seq if 0 <= x < len(test_word)] 
@@ -1383,7 +1409,7 @@ class DFALearner(BaseAutomataLearner):
         
         return new_dfas
 
-    def propose_automata(self, dfas, state, sample_fcn, iteration, previous_best: list, data_type: str = 'Tabular', beam_size: int = 10):
+    def propose_automata(self, dfas, state, iteration, previous_best: list, output_dir: str, beam_size: int = 10):
         """
         Propose new DFA candidates by expanding existing DFAs.
         
@@ -1434,7 +1460,7 @@ class DFALearner(BaseAutomataLearner):
 
                 print("--------------------------------------------")
                 print(f"Proposed DFA ID: {dfa_id}")
-                print(self.automaton_to_graphviz(dfa))
+                # print(self.automaton_to_graphviz(dfa, filename="initial_dfa", output_dir=output_dir))
             
             return dfas
 

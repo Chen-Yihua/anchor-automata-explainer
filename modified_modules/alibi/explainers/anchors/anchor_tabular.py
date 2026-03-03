@@ -837,6 +837,7 @@ class AnchorTabular(Explainer, FitMixin):
                 n_covered_ex: int = 10,
                 binary_cache_size: int = 10000,
                 cache_margin: int = 1000,
+                init_num_samples: int = 1000,
                 verbose: bool = False,
                 verbose_every: int = 1,
                 output_dir: str = "test_result/explain",
@@ -960,14 +961,14 @@ class AnchorTabular(Explainer, FitMixin):
             max_anchor_size=max_anchor_size,
             batch_size=batch_size,
             coverage_samples=coverage_samples,
-            init_num_samples=min_samples_start,
+            init_num_samples=init_num_samples,
             verbose=verbose,
             verbose_every=verbose_every,
             output_dir=output_dir,
             **kwargs
         )
-        self.mab = mab # 回傳 mab 的結果
-
+        self.mab = mab
+        
         return self._build_explanation(X, result, self.instance_label, params)
 
     def _build_explanation(self, X: np.ndarray, result: dict, predicted_label: int, params: dict) -> Explanation:

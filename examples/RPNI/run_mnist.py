@@ -16,31 +16,33 @@ from tee import Tee
 import numpy as np
 from modified_modules.alibi.explainers.anchors.anchor_tabular import AnchorTabular
 from datasets.mnist_stroke_loader import load_mnist_stroke_sequences
-from models.sequence_classifier import SimpleSequenceClassifier
+from models.sequence_classifier import SequenceClassifier
 from sklearn.metrics import accuracy_score
-
-# Load train/test split from file for reproducibility
 import pickle
-split_save_path = os.path.join(PROJECT_ROOT, "models", "mnist_train_test_split.pkl")
-if not os.path.exists(split_save_path):
-    print(f"Train/test split file not found at {split_save_path}\nPlease run: python models/train_mnist_classifier.py")
-    sys.exit(1)
-with open(split_save_path, "rb") as f:
-    split = pickle.load(f)
-X_train = split["X_train"]
-y_train = split["y_train"]
-X_test = split["X_test"]
-y_test = split["y_test"]
 
-with open("test_result/TestMnistRPNI1.txt", "w", encoding="utf-8") as log_file:
+output_dir = "test_result/TestMnistRPNI7"
+os.makedirs(output_dir, exist_ok=True)
+txt_path = os.path.join(output_dir, "TestMnistRPNI7.txt")
+with open(txt_path, "w", encoding="utf-8") as log_file:
     sys.stdout = Tee(sys.stdout, log_file)
+
+    # Load train/test split
+    split_save_path = os.path.join(PROJECT_ROOT, "models", "mnist_train_test_split.pkl")
+    if not os.path.exists(split_save_path):
+        print(f"Train/test split file not found at {split_save_path}\nPlease run: python models/train_mnist_classifier.py")
+        sys.exit(1)
+    with open(split_save_path, "rb") as f:
+        split = pickle.load(f)
+    X_train = split["X_train"]
+    y_train = split["y_train"]
+    X_test = split["X_test"]
+    y_test = split["y_test"]
 
     # Load pre-trained classifier
     model_path = os.path.join(PROJECT_ROOT, "models", "mnist_classifier_trained.pth")
-    
     if os.path.exists(model_path):
         print(f"Loading pre-trained model from: {model_path}")
-        clf = SimpleSequenceClassifier(device='cuda')
+        clf = SequenceClassifier(device='cuda')
         clf.load(model_path)
         print("Model loaded successfully!")
     else:
@@ -60,7 +62,7 @@ with open("test_result/TestMnistRPNI1.txt", "w", encoding="utf-8") as log_file:
     #  AnchorTabular explainer settings
     feature_names = [f'seq_{i}' for i in range(max(len(s) for s in X_train))]
     categorical_names = {}
-    test_instance = X_train[18] # 18
+    test_instance = X_train[23] # 23(7)、57(2)
     automaton_type = 'DFA'  # 'DFA' or 'RA'
 
     # all_symbols = set()
@@ -83,15 +85,15 @@ with open("test_result/TestMnistRPNI1.txt", "w", encoding="utf-8") as log_file:
     explainer.samplers[0].d_train_data = X_train
 
     # run explainer.explain (beam search)
-    accuracy_threshold = 0.98
+    accuracy_threshold = 0.8
     state_threshold = 5
     delta = 0.01
     tau = 0.01
-    batch_size = 500
+    batch_size = 2000
     coverage_samples = 1000
     beam_size = 2
     max_anchor_size = None
-    min_samples_start = 1000
+    init_num_samples = 1000
     # n_covered_ex = 20
     edit_distance = 5
 
@@ -114,8 +116,9 @@ with open("test_result/TestMnistRPNI1.txt", "w", encoding="utf-8") as log_file:
         max_anchor_size=max_anchor_size,
         coverage_samples=coverage_samples,
         batch_size=batch_size,
-        min_samples_start=min_samples_start,
+        init_num_samples=init_num_samples,
         # n_covered_ex=n_covered_ex,
+        output_dir=output_dir,
         verbose=True,
     )
     print('\n============== Result ==============')
@@ -123,4 +126,9 @@ with open("test_result/TestMnistRPNI1.txt", "w", encoding="utf-8") as log_file:
     print('Training Accuracy:', explanation.data['training_accuracy'])
     print('Testing Accuracy:', explanation.data['testing_accuracy'])
     print('Number of States:', explanation.data['state'])
+
+    print("\n" + "=" * 60)
+    print("Training data and label:")
+    for i, seq in enumerate(X_train[:10]):
+        print(f"Train {i}: {seq} (Label: {y_train[i]})")
     sys.stdout = sys.__stdout__

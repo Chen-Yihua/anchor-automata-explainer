@@ -23,8 +23,14 @@ from tee import Tee
 import numpy as np
 import time
 from sklearn.model_selection import train_test_split
-# from sklearn.ensemble import RandomForestClassifier
-# from sklearn.preprocessing import LabelBinarizer
+
+# from models.simple_sequence_classifier import SimpleSequenceClassifier
+from models.sequence_classifier import SequenceClassifier
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from sklearn.metrics import accuracy_score
 
 np.random.seed(42)
 random.seed(42)
@@ -36,38 +42,35 @@ if torch.cuda.is_available():
 LANGUAGES = {
     # "L1 (Constant Sequence)": L1,
     # "L2 (Pattern (abcd)*)": L2,
-    # "L2A (Pattern (aa)*)": L2A,``
+    # "L2A (Pattern (aa)*)": L2A,
     # "L2AB (Pattern (abcdabcd)*)": L2AB,
     # "L3 (Parity of counts)": L3,
     # "L3A (Pattern (aaa)*)": L3A,
-    "L3AB (Pattern (abcdabcdabcd)*)": L3AB, # 30 states: ['a', 'b', 'c', 'd'] * 6 -
-    "L4 (No three consecutive same)": L4,
+    # "L3AB (Pattern (abcdabcdabcd)*)": L3AB, # 30 states: ['a', 'b', 'c', 'd'] * 6 -
+    # "L4 (No three consecutive same)": L4,
     # "L4A (Pattern (aaaa)*)": L4A,
     # "L4AB (Pattern (abcdabcdabcdabcd)*)": L4AB,
-    "L5 (Even count of A and B)": L5,
+    # "L5 (Even count of A and B)": L5,
     # "L5A (Pattern (aaaaa)*)": L5A,
     # "L5AB (Pattern (abcdabcdabcdabcdabcd)*)": L5AB,
-    "L6 (Modulo Balance)": L6,
+    "L6 (|#a - #b| mod 3 == 0)": L6,
     # "L6A (Pattern (aaaaaa)*)": L6A,
-    "L7 (Pattern a*b*a*b*)": L7,
+    # "L7 (Pattern a*b*a*b*)": L7,
     # "L7A (Pattern (aaaaaaa)*)": L7A,
     # "L8A (Pattern (aaaaaaaa)*)": L8A,
     # "L9A (Pattern (aaaaaaaaa)*)": L9A,
     # "L10A (Pattern (aaaaaaaaaa)*)": L10A,
-
-    # "EvenPairs (Even ab/ba pairs)": EvenPairs,
 }
 
-# --- Main Loop ---
 for lang_name, lang_class in LANGUAGES.items():
     lang_code = lang_name.split(" ")[0]
     
     # Create output directory for this language
-    output_dir = os.path.join(PROJECT_ROOT, "test_result", f"tomita_{lang_code}")
+    output_dir = f"test_result/tomita_{lang_code}"
     os.makedirs(output_dir, exist_ok=True)
+    txt_path = os.path.join(output_dir, f"tomita_{lang_code}.txt")
     
-    output_filename = os.path.join(output_dir, f"tomita_{lang_code}.txt")
-    with open(output_filename, "w", encoding="utf-8") as log_file:
+    with open(txt_path, "w", encoding="utf-8") as log_file:
         original_stdout = sys.stdout
         sys.stdout = Tee(sys.stdout, log_file)
 
@@ -78,125 +81,149 @@ for lang_name, lang_class in LANGUAGES.items():
         # Start timing
         total_start_time = time.time()
 
-        # Generate Data
-        data_gen_start = time.time()
-        model = lang_class()
-        pos_samples, neg_samples = model.generate_samples(num_pos=5000, num_neg=5000, max_length=9)
-        data_gen_time = time.time() - data_gen_start
-        print(f"Data generation time: {data_gen_time:.2f}s")
+        # set hyperparameters based on language
+        if lang_code == 'L3AB':
+            num_pos=5000
+            num_neg=5000
+            max_length=10
+            embedding_dim = 16
+            hidden_dim = 32
+            num_layers=1
+            dropout = 0
+            epochs = 20
+            batch_size = 32
+            test_instance = ['a', 'b', 'c', 'd', 'a', 'b', 'c', 'd', 'a', 'b', 'c', 'd']
+            alphabet = ['a', 'b', 'c', 'd']
+            accuracy_threshold = 0.9
+            state_threshold = 5
+            delta = 0.01
+            tau = 0.01
+            batch_size = 2000
+            coverage_samples = 1000
+            beam_size = 1
+            init_num_samples = 2000
+            edit_distance = 4
+        elif lang_code == 'L4':
+            num_pos=10000
+            num_neg=10000
+            max_length=10
+            embedding_dim = 16
+            hidden_dim = 64
+            num_layers=2
+            dropout = 0.5
+            epochs = 30
+            batch_size = 128
+            test_instance = ['a', 'a', 'b', 'a', 'c', 'c', 'd', 'b', 'b'] 
+            alphabet = ['a', 'b', 'c', 'd']
+            accuracy_threshold = 0.9
+            state_threshold = 5
+            delta = 0.01
+            tau = 0.01
+            batch_size = 500
+            coverage_samples = 1000
+            beam_size = 1
+            init_num_samples = 1000
+            edit_distance = 4
+        # elif lang_code == 'L5':
+        #     num_pos=5000
+        #     num_neg=5000
+        #     max_length=10
+        #     embedding_dim = 16
+        #     hidden_dim = 32
+        #     num_layers=1
+        #     dropout = 0
+        #     epochs = 10
+        #     batch_size = 32
+        #     use_attention = False
+        #     test_instance = ['b', 'a', 'a', 'b', 'b', 'b', 'b', 'b', 'a', 'a', 'b']
+        #     alphabet = ['a', 'b']
+        #     accuracy_threshold = 0.95
+        #     state_threshold = 5
+        #     delta = 0.01
+        #     tau = 0.01
+        #     batch_size = 500
+        #     coverage_samples = 1000
+        #     beam_size = 1
+        #     init_num_samples = 2000
+        #     edit_distance = 8
+        elif lang_code == 'L6':
+            num_pos=5000
+            num_neg=5000
+            max_length=10
+            embedding_dim = 16
+            hidden_dim = 32
+            num_layers=1
+            dropout = 0.5
+            epochs = 20
+            batch_size = 32
+            use_attention = False
+            test_instance = ['a', 'a', 'a', 'c', 'a', 'a', 'b', 'b']
+            alphabet = ['a', 'b', 'c', 'd']
+            accuracy_threshold = 0.9
+            state_threshold = 5
+            delta = 0.01
+            tau = 0.01
+            batch_size = 500
+            coverage_samples = 1000
+            beam_size = 1
+            init_num_samples = 2000
+            edit_distance = 3
+        else:  # L7
+            num_pos=5000
+            num_neg=5000
+            max_length=10
+            embedding_dim = 16
+            hidden_dim = 32
+            num_layers=1
+            dropout = 0
+            epochs = 20
+            batch_size = 32
+            use_attention = False
+            test_instance = ['a', 'a', 'b', 'b', 'b', 'a', 'a', 'b', 'b', 'b']
+            alphabet = ['a', 'b', 'c', 'd']
+            accuracy_threshold = 0.9
+            state_threshold = 5
+            delta = 0.01
+            tau = 0.01
+            batch_size = 500
+            coverage_samples = 1000
+            beam_size = 1
+            init_num_samples = 2000
+            edit_distance = 10
 
-        X = pos_samples + neg_samples
-        y = [1] * len(pos_samples) + [0] * len(neg_samples)
-        X = np.array(X, dtype=object)
-        y = np.array(y)
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        # Load train/test split
+        import pickle
+        split_save_path = os.path.join(PROJECT_ROOT, "models", f"{lang_code}_train_test_split.pkl")
+        if not os.path.exists(split_save_path):
+            print(f"Train/test split file not found at {split_save_path}\nPlease run: python models/train_tomita_classifier.py")
+            sys.exit(1)
+        with open(split_save_path, "rb") as f:
+            split = pickle.load(f)
+        X_train = split["X_train"]
+        y_train = split["y_train"]
+        X_test = split["X_test"]
+        y_test = split["y_test"]
 
-        # PyTorch LSTM for variable-length sequence classification
-        import torch
-        import torch.nn as nn
-        import torch.optim as optim
-        from torch.utils.data import Dataset, DataLoader
-        from sklearn.metrics import accuracy_score
+        # Load pre-trained classifier
+        model_path = os.path.join(PROJECT_ROOT, "models", f"{lang_code}_classifier_trained.pth")
+        if os.path.exists(model_path):
+            print(f"Loading pre-trained model from: {model_path}")
+            clf = SequenceClassifier(max_len=max_length, embedding_dim=embedding_dim, device='cuda')
+            clf.load(model_path)
+            print("Model loaded successfully!")
+        else:
+            print(f"Model not found at {model_path}")
+            print(f"Please run: python models/train_tomita_classifier.py")
+            sys.exit(1)
+        predict_fn = lambda X: clf.predict(X)
 
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        alphabet = ['a', 'b', 'c', 'd']
-        char2idx = {c: i+1 for i, c in enumerate(alphabet)}  # 0 for padding
-        pad_idx = 0
-
-        def encode_seq(seq):
-            def to_char(val):
-                if isinstance(val, (float, np.floating, int, np.integer)):
-                    if int(val) == 0:
-                        return 'a'
-                    elif int(val) == 1:
-                        return 'b'
-                    else:
-                        raise ValueError(f'Unknown value: {val}')
-                return val
-            return [char2idx[to_char(c)] for c in seq]
-
-        def pad_sequences(seqs):
-            # 若序列長度為0，補一個pad_idx
-            seqs = [s if len(s) > 0 else [pad_idx] for s in seqs]
-            maxlen = max(len(s) for s in seqs)
-            return [s + [pad_idx]*(maxlen-len(s)) for s in seqs], [len(s) for s in seqs]
-
-        class SeqDataset(Dataset):
-            def __init__(self, X, y):
-                self.X = [encode_seq(s) for s in X]
-                self.y = y
-            def __len__(self):
-                return len(self.X)
-            def __getitem__(self, idx):
-                return torch.tensor(self.X[idx], dtype=torch.long), torch.tensor(self.y[idx], dtype=torch.float32)
-
-        from models.simple_sequence_classifier import SimpleSequenceClassifier
-
-        train_dataset = SeqDataset(X_train, y_train)
-        test_dataset = SeqDataset(X_test, y_test)
-        def collate_fn(batch):
-            xs = [b[0] for b in batch]
-            ys = [b[1] for b in batch]
-            lengths = torch.tensor([len(x) for x in xs], dtype=torch.long)
-            xs_padded = nn.utils.rnn.pad_sequence(xs, batch_first=True, padding_value=pad_idx)
-            ys = torch.stack(ys)
-            return xs_padded, ys, lengths
-        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, collate_fn=collate_fn)
-        test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, collate_fn=collate_fn)
-
-        model_rnn = SimpleSequenceClassifier(vocab_size=len(alphabet)+1, emb_dim=16, hidden_dim=64).to(device)
-        optimizer = optim.Adam(model_rnn.parameters(), lr=0.001)
-        criterion = nn.BCEWithLogitsLoss()
-
-        for epoch in range(20):
-            model_rnn.train()
-            epoch_loss = 0.0
-            batch_count = 0
-            for xb, yb, lb in train_loader:
-                xb, yb, lb = xb.to(device), yb.to(device), lb.to(device)
-                # 過濾掉長度為 0 的序列
-                mask = lb > 0
-                if not torch.all(mask):
-                    xb = xb[mask]
-                    yb = yb[mask]
-                    lb = lb[mask]
-                if xb.size(0) == 0:
-                    continue  # 跳過這個 batch
-                optimizer.zero_grad()
-                out = model_rnn(xb, lb)
-                loss = criterion(out, yb)
-                loss.backward()
-                optimizer.step()
-                epoch_loss += loss.item()
-                batch_count += 1
-            if batch_count > 0:
-                avg_loss = epoch_loss / batch_count
-                print(f"Epoch {epoch+1} - Avg Loss: {avg_loss:.4f}")
-
-        def predict_rnn(X):
-            model_rnn.eval()
-            X_enc = [encode_seq(s) for s in X]
-            X_pad, lengths = pad_sequences(X_enc)
-            xb = torch.tensor(X_pad, dtype=torch.long).to(device)
-            lb = torch.tensor(lengths, dtype=torch.long).to(device)
-            with torch.no_grad():
-                logits = model_rnn(xb, lb)
-                probs = torch.sigmoid(logits)
-                return (probs.cpu().numpy() > 0.5).astype(int)
-
-        train_acc = accuracy_score(y_train, predict_rnn(X_train))
-        test_acc = accuracy_score(y_test, predict_rnn(X_test))
-        print(f"Predictor Train Accuracy: {train_acc:.3f}")
-        print(f"Predictor Test Accuracy: {test_acc:.3f}")
-        # print("[DEBUG] predictiom of ['a', 'a']:", predict_rnn([['a', 'a']]))
-        # print("[DEBUG] predictiom of ['a', 'a', 'a']:", predict_rnn([['a', 'a', 'a']]))
+        y_pred_train = predict_fn(X_train)
+        train_acc = accuracy_score(y_train, y_pred_train)
+        y_pred_test = predict_fn(X_test)
+        test_acc = accuracy_score(y_test, y_pred_test)
         
-        test_instance = ['a', 'b', 'c', 'd'] * 6  # Example test instance
-        # print(f"Alphabet: {alphabet}")
-        print(f"Test instance: {test_instance}")
-
         explainer = AnchorTabular(
-            predictor=predict_rnn,
+            predictor=predict_fn,
             feature_names=[f'seq_{i}' for i in range(max(len(s) for s in X_train))],
             categorical_names={},
             seed=1
@@ -210,17 +237,15 @@ for lang_name, lang_class in LANGUAGES.items():
         explainer.samplers[0].d_train_data = X_train
         
         # run explainer.explain (beam search)
-        accuracy_threshold = 0.95
-        state_threshold = 5
-        delta = 0.01
-        tau = 0.01
-        batch_size = 500
-        coverage_samples = 1000
-        beam_size = 3
-        # max_anchor_size = None
-        min_samples_start = 3000
-        # n_covered_ex = 20
-        edit_distance = 24
+        # accuracy_threshold = 0.9
+        # state_threshold = 5
+        # delta = 0.01
+        # tau = 0.01
+        # batch_size = 500
+        # coverage_samples = 1000
+        # beam_size = 2
+        # init_num_samples = 2000
+        # edit_distance = 5
         
         # Start timing for DFA learning
         dfa_start_time = time.time()
@@ -236,9 +261,9 @@ for lang_name, lang_class in LANGUAGES.items():
             tau=tau,
             beam_size=beam_size,
             batch_size=batch_size,
-            min_samples_start=min_samples_start,
+            init_num_samples=init_num_samples,
             # n_covered_ex=n_covered_ex,
-            verbose=True, # Set to True for detailed beam search logs
+            verbose=True,
             constants=[],
             output_dir=output_dir,
         )
@@ -248,7 +273,7 @@ for lang_name, lang_class in LANGUAGES.items():
         # 5. Print Results
         print('\n============== Final Result ==============')
         print(f"Explaining instance: {test_instance}")
-        print(f"Prediction: {predict_rnn([test_instance])}")
+        print(f"Prediction: {predict_fn([test_instance])}")
         
         if explanation and explanation.data:
             dfa = explanation.data.get('automata', None)
@@ -258,17 +283,16 @@ for lang_name, lang_class in LANGUAGES.items():
             print('Number of States:', explanation.data.get('state', 'N/A'))
         else:
             print("Explanation failed or did not produce a valid automaton.")
+
+        print("\n" + "=" * 60)
+        print("Training data and label:")
+        for i, seq in enumerate(X_train[:10]):
+            print(f"Train {i}: {seq} (Label: {y_train[i]})")
         
         # Print timing information
         print(f"\n============== Timing ==============")
-        print(f"Data generation time: {data_gen_time:.2f}s")
+        # print(f"Data generation time: {data_gen_time:.2f}s")
         print(f"DFA learning time: {dfa_learning_time:.2f}s")
         print(f"Total time: {total_time:.2f}s")
 
-    # Restore stdout
     sys.stdout = original_stdout
-    print(f"Results for {lang_code} saved to: {output_dir}")
-
-print(f"\n{'='*60}")
-print(f"All benchmark results saved to: test_result/benchmark_*/")
-print(f"{'='*60}")
