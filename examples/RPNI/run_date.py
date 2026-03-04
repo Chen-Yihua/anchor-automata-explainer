@@ -1,5 +1,6 @@
 
 import sys, os
+import time
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 SRC_PATH = os.path.join(PROJECT_ROOT, 'src')
 EXTERNAL_MODULES = os.path.join(PROJECT_ROOT, 'external_modules')
@@ -14,9 +15,10 @@ for path in [MODIFIED_MODULES, SRC_PATH, EXTERNAL_MODULES, EXPLAINING_FA, INTERP
 from src.tee import Tee
 from modified_modules.alibi.explainers.anchors.anchor_tabular import AnchorTabular
 from models.sequence_classifier import SequenceClassifier
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 import pickle
+from learner import AUTO_INSTANCE
+import numpy as np
 
 output_dir = "test_result/TestDFA_date_fixed_length"
 os.makedirs(output_dir, exist_ok=True)
@@ -92,11 +94,8 @@ with open(txt_path, "w", encoding="utf-8") as log_file:
     n_covered_ex = 20
     edit_distance = 10
 
-    print(f"\nExplaining instance: {test_instance}")
-    print(f"Prediction: {predict_fn([test_instance])[0]}")
-    print(f"Train accuracy: {train_acc:.4f}")
-    print(f"Test accuracy: {test_acc:.4f}")
     print("\n============ Training DFA Explanation (MM-DD-YYYY) ============")
+    start_time = time.time()
     explanation = explainer.explain(
         type='Tabular',
         automaton_type=automaton_type,
@@ -117,14 +116,58 @@ with open(txt_path, "w", encoding="utf-8") as log_file:
         output_dir=output_dir,
         verbose=True,
     )
+    learning_time = time.time() - start_time
+    automaton = explanation.data['automata']
+
     print('\n============== Result ==============')
-    print('DFA:', explanation.data['automata'])
-    print('Training Accuracy:', explanation.data['training_accuracy'])
-    print('Testing Accuracy:', explanation.data['testing_accuracy'])
+    print(f"Training Accuracy of model: {train_acc:.4f}")
+    print(f"Testing Accuracy of model: {test_acc:.4f}")
+    print(f"Explaining Instance: {test_instance}")
+    print(f"Prediction of Instance: {predict_fn([test_instance])}")
+
+    print('\nFinal DFA:', automaton)
     print('Number of States:', explanation.data['state'])
+    print('Training Accuracy of DFA:', explanation.data['training_accuracy'])
+    print('Testing Accuracy of DFA:', explanation.data['testing_accuracy'])
+
+    print("\n" + "=" * 60)
+    print("Quick Validation - Sample Test")
+    print("=" * 60)
+    
+    automaton = explanation.data['automata']
+    target_label = predict_fn([test_instance])[0]
+    
+    print(f"\nTarget label: {target_label}")
+    print(f"Test instance: {test_instance}\n")
+    
+    np.random.seed(42)
+    target_seqs = [seq for seq, label in zip(X_test, y_test) if label == target_label]
+    other_seqs = [seq for seq, label in zip(X_test, y_test) if label != target_label]
+    
+    if len(target_seqs) > 0:
+        sample_target_idx = np.random.choice(len(target_seqs), min(5, len(target_seqs)), replace=False)
+        target_accept = sum(1 for i in sample_target_idx if AUTO_INSTANCE.check_path_accepted(automaton, target_seqs[i]))
+        print(f"Target label {target_label} - Acceptance: {target_accept}/{len(sample_target_idx)}")
+        for i in sample_target_idx[:3]:
+            accepted = AUTO_INSTANCE.check_path_accepted(automaton, target_seqs[i])
+            print(f"  {'Accept' if accepted else 'Reject'}: {''.join(target_seqs[i])}")
+    
+    if len(other_seqs) > 0:
+        sample_other_idx = np.random.choice(len(other_seqs), min(5, len(other_seqs)), replace=False)
+        other_reject = sum(1 for i in sample_other_idx if not AUTO_INSTANCE.check_path_accepted(automaton, other_seqs[i]))
+        print(f"\nOther labels - Rejection: {other_reject}/{len(sample_other_idx)}")
+        for i in sample_other_idx[:3]:
+            seq = other_seqs[i]
+            label = next(y for s, y in zip(X_test, y_test) if s == seq)
+            accepted = AUTO_INSTANCE.check_path_accepted(automaton, seq)
+            print(f"  {'Reject' if not accepted else 'Accept'} (Label {label}): {''.join(seq)}")
 
     print("\n" + "=" * 60)
     print("Training data and label:")
     for i, seq in enumerate(X_train[:10]):
         print(f"Train {i}: {seq} (Label: {y_train[i]})")
+
+    # Print timing information
+    print(f"\n============== Timing ==============")
+    print(f"DFA learning time: {learning_time:.2f}s")
     sys.stdout = sys.__stdout__

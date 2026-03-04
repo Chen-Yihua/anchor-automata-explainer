@@ -19,17 +19,12 @@ from datasets.tomita_loader_dfa import (
     L1, L2, L2A, L3, L3A, L4, L4A, L5, L5A, L6, L6A, L7, L7A, L8A, L9A, L10A,
     L2AB, L3AB, L4AB, L5AB,
 )
+from models.sequence_classifier import SequenceClassifier
+
 from tee import Tee
 import numpy as np
 import time
-from sklearn.model_selection import train_test_split
-
-# from models.simple_sequence_classifier import SimpleSequenceClassifier
-from models.sequence_classifier import SequenceClassifier
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score
 
 np.random.seed(42)
@@ -46,14 +41,14 @@ LANGUAGES = {
     # "L2AB (Pattern (abcdabcd)*)": L2AB,
     # "L3 (Parity of counts)": L3,
     # "L3A (Pattern (aaa)*)": L3A,
-    # "L3AB (Pattern (abcdabcdabcd)*)": L3AB, # 30 states: ['a', 'b', 'c', 'd'] * 6 -
+    "L3AB (Pattern (abcdabcdabcd)*)": L3AB, # 30 states: ['a', 'b', 'c', 'd'] * 6 -
     # "L4 (No three consecutive same)": L4,
     # "L4A (Pattern (aaaa)*)": L4A,
     # "L4AB (Pattern (abcdabcdabcdabcd)*)": L4AB,
     # "L5 (Even count of A and B)": L5,
     # "L5A (Pattern (aaaaa)*)": L5A,
     # "L5AB (Pattern (abcdabcdabcdabcdabcd)*)": L5AB,
-    "L6 (|#a - #b| mod 3 == 0)": L6,
+    # "L6 (|#a - #b| mod 3 == 0)": L6,
     # "L6A (Pattern (aaaaaa)*)": L6A,
     # "L7 (Pattern a*b*a*b*)": L7,
     # "L7A (Pattern (aaaaaaa)*)": L7A,
@@ -236,19 +231,9 @@ for lang_name, lang_class in LANGUAGES.items():
         )
         explainer.samplers[0].d_train_data = X_train
         
-        # run explainer.explain (beam search)
-        # accuracy_threshold = 0.9
-        # state_threshold = 5
-        # delta = 0.01
-        # tau = 0.01
-        # batch_size = 500
-        # coverage_samples = 1000
-        # beam_size = 2
-        # init_num_samples = 2000
-        # edit_distance = 5
-        
         # Start timing for DFA learning
-        dfa_start_time = time.time()
+        print("\n============ Training DFA Explanation (tomita) ============")
+        start_time = time.time()
         explanation = explainer.explain(
             type='Tabular',
             automaton_type='DFA',
@@ -267,22 +252,53 @@ for lang_name, lang_class in LANGUAGES.items():
             constants=[],
             output_dir=output_dir,
         )
-        dfa_learning_time = time.time() - dfa_start_time
-        total_time = time.time() - total_start_time
+        learning_time = time.time() - start_time
+        automaton = explanation.data['automata']
 
-        # 5. Print Results
-        print('\n============== Final Result ==============')
-        print(f"Explaining instance: {test_instance}")
-        print(f"Prediction: {predict_fn([test_instance])}")
-        
-        if explanation and explanation.data:
-            dfa = explanation.data.get('automata', None)
-            print('DFA:', dfa)
-            print('Training Accuracy (擾動樣本):', explanation.data.get('training_accuracy', 'N/A'))
-            print('Testing Accuracy (擾動樣本):', explanation.data.get('testing_accuracy', 'N/A'))
-            print('Number of States:', explanation.data.get('state', 'N/A'))
-        else:
-            print("Explanation failed or did not produce a valid automaton.")
+        print('\n============== Result ==============')
+        print(f"Training Accuracy of model: {train_acc:.4f}")
+        print(f"Testing Accuracy of model: {test_acc:.4f}")
+        print(f"Explaining Instance: {test_instance}")
+        print(f"Prediction of Instance: {predict_fn([test_instance])}")
+
+        print('\nFinal DFA:', automaton)
+        print('Number of States:', explanation.data['state'])
+        print('Training Accuracy of DFA:', explanation.data['training_accuracy'])
+        print('Testing Accuracy of DFA:', explanation.data['testing_accuracy'])
+
+        if explanation and explanation.data and automaton:
+            from learner import AUTO_INSTANCE
+            
+            print("\n" + "=" * 60)
+            print("Quick Validation - Sample Test")
+            print("=" * 60)
+            
+            target_label = predict_fn([test_instance])[0]
+            
+            print(f"\nTarget label: {target_label}")
+            print(f"Test instance: {test_instance}\n")
+            
+            np.random.seed(42)
+            target_seqs = [seq for seq, label in zip(X_test, y_test) if label == target_label]
+            other_seqs = [seq for seq, label in zip(X_test, y_test) if label != target_label]
+            
+            if len(target_seqs) > 0:
+                sample_target_idx = np.random.choice(len(target_seqs), min(5, len(target_seqs)), replace=False)
+                target_accept = sum(1 for i in sample_target_idx if AUTO_INSTANCE.check_path_accepted(automaton, target_seqs[i]))
+                print(f"Target label {target_label} - Acceptance: {target_accept}/{len(sample_target_idx)}")
+                for i in sample_target_idx[:3]:
+                    accepted = AUTO_INSTANCE.check_path_accepted(automaton, target_seqs[i])
+                    print(f"  {'Accept' if accepted else 'Reject'}: {target_seqs[i]}")
+            
+            if len(other_seqs) > 0:
+                sample_other_idx = np.random.choice(len(other_seqs), min(5, len(other_seqs)), replace=False)
+                other_reject = sum(1 for i in sample_other_idx if not AUTO_INSTANCE.check_path_accepted(automaton, other_seqs[i]))
+                print(f"\nOther labels - Rejection: {other_reject}/{len(sample_other_idx)}")
+                for i in sample_other_idx[:3]:
+                    seq = other_seqs[i]
+                    label = next(y for s, y in zip(X_test, y_test) if s == seq)
+                    accepted = AUTO_INSTANCE.check_path_accepted(automaton, seq)
+                    print(f"  {'Reject' if not accepted else 'Accept'} (Label {label}): {seq}")
 
         print("\n" + "=" * 60)
         print("Training data and label:")
@@ -291,8 +307,6 @@ for lang_name, lang_class in LANGUAGES.items():
         
         # Print timing information
         print(f"\n============== Timing ==============")
-        # print(f"Data generation time: {data_gen_time:.2f}s")
-        print(f"DFA learning time: {dfa_learning_time:.2f}s")
-        print(f"Total time: {total_time:.2f}s")
+        print(f"DFA learning time: {learning_time:.2f}s")
 
     sys.stdout = original_stdout
