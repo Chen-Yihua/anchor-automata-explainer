@@ -1,4 +1,5 @@
 
+from fontTools.unicodedata import normalize
 import numpy as np
 
 class L1:
@@ -169,33 +170,47 @@ class L3AB:
         neg = [to_str_list(seq) for seq in neg]
         return pos, neg
     
+import random
+
 class L4:
+    # Language: No three consecutive identical symbols
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
-        alphabet = ['a','b','c','d']
-        # ----- Positive -----
-        while len(pos) < num_pos:
-            length = np.random.randint(3, max_length + 1)
+        alphabet = ['a', 'b', 'c', 'd']
+
+        # ---------- Generate Positive ----------
+        def generate_positive():
+            length = random.randint(3, max_length)
             seq = []
             for _ in range(length):
                 if len(seq) >= 2 and seq[-1] == seq[-2]:
                     choices = [x for x in alphabet if x != seq[-1]]
-                    seq.append(np.random.choice(choices))
+                    seq.append(random.choice(choices))
                 else:
-                    seq.append(np.random.choice(alphabet))
-            pos.append(seq)
+                    seq.append(random.choice(alphabet))
+            return seq
 
-        # ----- Negative -----
+        # Positive samples
+        while len(pos) < num_pos:
+            pos.append(generate_positive())
+
+        # ---------- Generate Negative ----------
         while len(neg) < num_neg:
-            length = np.random.randint(3, max_length + 1)
-            seq = np.random.choice(alphabet, length).tolist()
+            # Step 1: start from a valid positive
+            seq = generate_positive()
 
-            # 強制插入 triple
-            pos_insert = np.random.randint(0, length - 2)
-            symbol = np.random.choice(alphabet)
-            seq[pos_insert:pos_insert+3] = [symbol]*3
+            # Step 2: force a violation
+            if len(seq) >= 3:
+                insert_pos = random.randint(0, len(seq) - 3)
+                symbol = random.choice(alphabet)
+                seq[insert_pos:insert_pos+3] = [symbol, symbol, symbol]
 
-            neg.append(seq)
+                # Ensure violation really exists
+                # (in rare case overwrite didn't change anything)
+                if any(seq[i] == seq[i+1] == seq[i+2] 
+                       for i in range(len(seq)-2)):
+                    neg.append(seq)
+
         return pos, neg
     
 class L4A:
@@ -391,38 +406,42 @@ class L6A:
         return pos, neg
 
 class L7:
-    # Accepts strings where a/b sequence is a*b*a*b* (ignoring c/d noise).
-    # Positive examples: pure a/b in a*b*a*b* structure (no c/d)
-    # Negative examples: may contain c/d noise
+    # Accepts a*b*a*b* ignoring c/d noise
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
+        noise_alphabet = ['c', 'd']
 
+        def insert_noise(seq, max_length):
+            remaining = max_length - len(seq)
+            noise_count = np.random.randint(0, remaining + 1)
+            for _ in range(noise_count):
+                idx = np.random.randint(0, len(seq)+1)
+                seq.insert(idx, str(np.random.choice(noise_alphabet)))
+            return seq
+
+        # -------- Positive --------
         for _ in range(num_pos):
-            l1 = np.random.randint(1, max_length//4)
-            l2 = np.random.randint(1, max_length//4)
-            l3 = np.random.randint(1, max_length//4)
-            l4 = np.random.randint(1, max_length//4)
+            l1 = np.random.randint(1, max_length//4 + 1)
+            l2 = np.random.randint(1, max_length//4 + 1)
+            l3 = np.random.randint(1, max_length//4 + 1)
+            l4 = np.random.randint(1, max_length//4 + 1)
 
-            base = ['a']*l1 + ['b']*l2 + ['a']*l3 + ['b']*l4
-            
-            # 插入 noise
-            seq = []
-            for s in base:
-                seq.append(s)
-                if np.random.rand() < 0.2:
-                    seq.append(np.random.choice(['c','d']))
-            
-            pos.append(seq)
+            seq = ['a']*l1 + ['b']*l2 + ['a']*l3 + ['b']*l4
+            if len(seq) <= max_length:
+                seq = insert_noise(seq, max_length)
+                pos.append(seq)
 
+        # -------- Negative --------
         for _ in range(num_neg):
-            # 專門破壞 phase
-            l1 = np.random.randint(1, max_length//4)
-            l2 = np.random.randint(1, max_length//4)
-            l3 = np.random.randint(1, max_length//4)
+            # break phase: add a after final b*
+            l1 = np.random.randint(1, max_length//3 + 1)
+            l2 = np.random.randint(1, max_length//3 + 1)
+            l3 = np.random.randint(1, max_length//3 + 1)
 
-            seq = ['a']*l1 + ['b']*l2 + ['a']*l3 + ['b']*l2 + ['a']  # extra a
-
-            neg.append(seq)
+            seq = ['a']*l1 + ['b']*l2 + ['a']*l3 + ['b']*l2 + ['a']
+            if len(seq) <= max_length:
+                seq = insert_noise(seq, max_length)
+                neg.append(seq)
 
         return pos, neg
 
@@ -473,15 +492,6 @@ class L8A:
         return pos, neg
 
 class L9A:
-    # Accepts only strings where every block of 9 symbols is the same. Works for any alphabet.
-    # def check(self, lst):
-    #     s = _to_ab(lst)
-    #     if len(s)%9!=0:
-    #         return False
-    #     for i in range(0,len(s),9):
-    #         if not all(x==s[i] for x in s[i:i+9]):
-    #             return False
-    #     return True
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
         alphabet = ['a','b','c','d']
@@ -504,15 +514,6 @@ class L9A:
         return pos, neg
 
 class L10A:
-    # Accepts only strings where every block of 10 symbols is the same. Works for any alphabet.
-    # def check(self, lst):
-    #     s = _to_ab(lst)
-    #     if len(s)%10!=0:
-    #         return False
-    #     for i in range(0,len(s),10):
-    #         if not all(x==s[i] for x in s[i:i+10]):
-    #             return False
-    #     return True
     def generate_samples(self, num_pos, num_neg, max_length):
         pos, neg = [], []
         alphabet = ['a','b','c','d']
@@ -537,25 +538,3 @@ class L10A:
         pos = [to_str_list(seq) for seq in pos]
         neg = [to_str_list(seq) for seq in neg]
         return pos, neg
-
-# class EvenPairs:
-#     def check(self, seq):
-#         # seq: list of 'a'/'b'/'c'
-#         s = ''.join(seq)
-#         c_ab = sum(1 for i in range(len(s)-1) if s[i:i+2] == 'ab')
-#         c_ba = sum(1 for i in range(len(s)-1) if s[i:i+2] == 'ba')
-#         # ignore pairs with 'c'
-#         return (c_ab + c_ba) % 2 == 0
-#     def generate_samples(self, num_pos, num_neg, max_length):
-#         pos, neg = [], []
-#         alphabet = ['a', 'b', 'c', 'd']
-#         while len(pos) < num_pos or len(neg) < num_neg:
-#             l = random.randint(2, max_length)
-#             s = [random.choice(alphabet) for _ in range(l)]
-#             if self.check(s):
-#                 if len(pos) < num_pos:
-#                     pos.append(s)
-#             else:
-#                 if len(neg) < num_neg:
-#                     neg.append(s)
-#         return pos, neg

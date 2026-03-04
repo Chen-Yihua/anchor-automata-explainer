@@ -33,9 +33,9 @@ from datasets.tomita_loader_dfa import (
 
 LANGUAGES = {
     # "L3AB": L3AB,
-    # "L4": L4,
+    "L4": L4,
     # "L5": L5,
-    "L6": L6,
+    # "L6": L6,
     # "L7": L7,
 }
 
@@ -90,7 +90,7 @@ def generate_and_train(lang_code, lang_class):
         hidden_dim = 32
         num_layers=1
         dropout = 0.5
-        weight_decay = 5e-4
+        weight_decay = 1e-4
         epochs = 20
         batch_size = 32
         use_attention = False
@@ -101,9 +101,9 @@ def generate_and_train(lang_code, lang_class):
         embedding_dim = 16
         hidden_dim = 32
         num_layers=1
-        dropout = 0
+        dropout = 0.3
         weight_decay = 1e-4
-        epochs = 20
+        epochs = 10
         batch_size = 32
         use_attention = False
 
