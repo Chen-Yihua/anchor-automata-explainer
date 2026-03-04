@@ -736,7 +736,7 @@ class DFALearner(BaseAutomataLearner):
         def clean_label(label):
             return str(label).replace('"', "'")
 
-        # 追踪实例的路径
+        # draw path edges if instance is provided
         path_edges = set()
         if instance is not None:
             current = dfa.initial_state
@@ -1272,10 +1272,8 @@ class DFALearner(BaseAutomataLearner):
         new_dfas = [dfa]  # Always include the original DFA
         
         # Find misclassified paths
-        # 批量路徑檢查
         if OPTIMIZATION_AVAILABLE and BatchPathChecker is not None:
             accepts = BatchPathChecker.check_paths_batch(dfa, data)
-            print(f"  [OPT-BATCH] 使用批量路徑檢查")
         else:
             accepts = np.array([self.check_path_accepted(dfa, p) for p in data])
         false_accept_indices = np.where((labels == 0) & (accepts == True))[0]
@@ -1389,10 +1387,7 @@ class DFALearner(BaseAutomataLearner):
                             modified = True
 
                 if modified:
-                    # 最終清理不可達狀態
                     remove_unreachable_states(new_dfa)
-
-                    # 檢查清理後是否還有接受狀態
                     if not any(st.is_accepting for st in new_dfa.states):
                         print(f"  [SKIP] DELTA redirect leaves no accepting state, skipping.")
                         del new_dfa

@@ -41,7 +41,7 @@ LANGUAGES = {
     # "L2AB (Pattern (abcdabcd)*)": L2AB,
     # "L3 (Parity of counts)": L3,
     # "L3A (Pattern (aaa)*)": L3A,
-    "L3AB (Pattern (abcdabcdabcd)*)": L3AB, # 30 states: ['a', 'b', 'c', 'd'] * 6 -
+    # "L3AB (Pattern (abcdabcdabcd)*)": L3AB, # 30 states: ['a', 'b', 'c', 'd'] * 6 -
     # "L4 (No three consecutive same)": L4,
     # "L4A (Pattern (aaaa)*)": L4A,
     # "L4AB (Pattern (abcdabcdabcdabcd)*)": L4AB,
@@ -50,7 +50,7 @@ LANGUAGES = {
     # "L5AB (Pattern (abcdabcdabcdabcdabcd)*)": L5AB,
     # "L6 (|#a - #b| mod 3 == 0)": L6,
     # "L6A (Pattern (aaaaaa)*)": L6A,
-    # "L7 (Pattern a*b*a*b*)": L7,
+    "L7 (Pattern a*b*a*b*)": L7,
     # "L7A (Pattern (aaaaaaa)*)": L7A,
     # "L8A (Pattern (aaaaaaaa)*)": L8A,
     # "L9A (Pattern (aaaaaaaaa)*)": L9A,
@@ -108,7 +108,7 @@ for lang_name, lang_class in LANGUAGES.items():
             dropout = 0.5
             epochs = 30
             batch_size = 128
-            test_instance = ['a', 'a', 'b', 'a', 'c', 'c', 'd', 'b', 'b'] 
+            test_instance = ['a', 'a', 'b', 'b', 'c', 'd'] 
             alphabet = ['a', 'b', 'c', 'd']
             accuracy_threshold = 0.9
             state_threshold = 5
@@ -117,30 +117,8 @@ for lang_name, lang_class in LANGUAGES.items():
             batch_size = 500
             coverage_samples = 1000
             beam_size = 1
-            init_num_samples = 1000
-            edit_distance = 4
-        # elif lang_code == 'L5':
-        #     num_pos=5000
-        #     num_neg=5000
-        #     max_length=10
-        #     embedding_dim = 16
-        #     hidden_dim = 32
-        #     num_layers=1
-        #     dropout = 0
-        #     epochs = 10
-        #     batch_size = 32
-        #     use_attention = False
-        #     test_instance = ['b', 'a', 'a', 'b', 'b', 'b', 'b', 'b', 'a', 'a', 'b']
-        #     alphabet = ['a', 'b']
-        #     accuracy_threshold = 0.95
-        #     state_threshold = 5
-        #     delta = 0.01
-        #     tau = 0.01
-        #     batch_size = 500
-        #     coverage_samples = 1000
-        #     beam_size = 1
-        #     init_num_samples = 2000
-        #     edit_distance = 8
+            init_num_samples = 2000
+            edit_distance = 5
         elif lang_code == 'L6':
             num_pos=5000
             num_neg=5000
@@ -174,7 +152,7 @@ for lang_name, lang_class in LANGUAGES.items():
             epochs = 20
             batch_size = 32
             use_attention = False
-            test_instance = ['a', 'a', 'b', 'b', 'b', 'a', 'a', 'b', 'b', 'b']
+            test_instance = ['a', 'a', 'b', 'a', 'a', 'b']
             alphabet = ['a', 'b', 'c', 'd']
             accuracy_threshold = 0.9
             state_threshold = 5
@@ -184,7 +162,7 @@ for lang_name, lang_class in LANGUAGES.items():
             coverage_samples = 1000
             beam_size = 1
             init_num_samples = 2000
-            edit_distance = 10
+            edit_distance = 5
 
         # Load train/test split
         import pickle
@@ -247,7 +225,6 @@ for lang_name, lang_class in LANGUAGES.items():
             beam_size=beam_size,
             batch_size=batch_size,
             init_num_samples=init_num_samples,
-            # n_covered_ex=n_covered_ex,
             verbose=True,
             constants=[],
             output_dir=output_dir,
@@ -286,7 +263,7 @@ for lang_name, lang_class in LANGUAGES.items():
                 sample_target_idx = np.random.choice(len(target_seqs), min(5, len(target_seqs)), replace=False)
                 target_accept = sum(1 for i in sample_target_idx if AUTO_INSTANCE.check_path_accepted(automaton, target_seqs[i]))
                 print(f"Target label {target_label} - Acceptance: {target_accept}/{len(sample_target_idx)}")
-                for i in sample_target_idx[:3]:
+                for i in sample_target_idx[:10]:
                     accepted = AUTO_INSTANCE.check_path_accepted(automaton, target_seqs[i])
                     print(f"  {'Accept' if accepted else 'Reject'}: {target_seqs[i]}")
             
@@ -294,7 +271,7 @@ for lang_name, lang_class in LANGUAGES.items():
                 sample_other_idx = np.random.choice(len(other_seqs), min(5, len(other_seqs)), replace=False)
                 other_reject = sum(1 for i in sample_other_idx if not AUTO_INSTANCE.check_path_accepted(automaton, other_seqs[i]))
                 print(f"\nOther labels - Rejection: {other_reject}/{len(sample_other_idx)}")
-                for i in sample_other_idx[:3]:
+                for i in sample_other_idx[:10]:
                     seq = other_seqs[i]
                     label = next(y for s, y in zip(X_test, y_test) if s == seq)
                     accepted = AUTO_INSTANCE.check_path_accepted(automaton, seq)

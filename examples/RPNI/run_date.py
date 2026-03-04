@@ -88,10 +88,9 @@ with open(txt_path, "w", encoding="utf-8") as log_file:
     tau = 0.01
     batch_size = 2000
     coverage_samples = 1000
-    beam_size = 2
+    beam_size = 1
     max_anchor_size = None
     init_num_samples = 2000
-    n_covered_ex = 20
     edit_distance = 10
 
     print("\n============ Training DFA Explanation (MM-DD-YYYY) ============")
@@ -112,7 +111,6 @@ with open(txt_path, "w", encoding="utf-8") as log_file:
         coverage_samples=coverage_samples,
         batch_size=batch_size,
         init_num_samples=init_num_samples,
-        n_covered_ex=n_covered_ex,
         output_dir=output_dir,
         verbose=True,
     )
@@ -148,7 +146,7 @@ with open(txt_path, "w", encoding="utf-8") as log_file:
         sample_target_idx = np.random.choice(len(target_seqs), min(5, len(target_seqs)), replace=False)
         target_accept = sum(1 for i in sample_target_idx if AUTO_INSTANCE.check_path_accepted(automaton, target_seqs[i]))
         print(f"Target label {target_label} - Acceptance: {target_accept}/{len(sample_target_idx)}")
-        for i in sample_target_idx[:3]:
+        for i in sample_target_idx[:10]:
             accepted = AUTO_INSTANCE.check_path_accepted(automaton, target_seqs[i])
             print(f"  {'Accept' if accepted else 'Reject'}: {''.join(target_seqs[i])}")
     
@@ -156,7 +154,7 @@ with open(txt_path, "w", encoding="utf-8") as log_file:
         sample_other_idx = np.random.choice(len(other_seqs), min(5, len(other_seqs)), replace=False)
         other_reject = sum(1 for i in sample_other_idx if not AUTO_INSTANCE.check_path_accepted(automaton, other_seqs[i]))
         print(f"\nOther labels - Rejection: {other_reject}/{len(sample_other_idx)}")
-        for i in sample_other_idx[:3]:
+        for i in sample_other_idx[:10]:
             seq = other_seqs[i]
             label = next(y for s, y in zip(X_test, y_test) if s == seq)
             accepted = AUTO_INSTANCE.check_path_accepted(automaton, seq)

@@ -341,13 +341,13 @@ class AnchorBaseBeam:
         while B > epsilon and t < MAX_ROUNDS:
             print(f"Round {t} : {crit_a_idx}")
             verbose_count += 1
-            if verbose and verbose_count % verbose_every == 0:
-                ut, lt = crit_a_idx
-                print('Best: %d (mean:%.10f, n: %d, lb:%.4f)' %
-                      (lt, means[lt], n_samples[lt], lb[lt]), end=' ')
-                print('Worst: %d (mean:%.4f, n: %d, ub:%.4f)' %
-                      (ut, means[ut], n_samples[ut], ub[ut]), end=' ')
-                print('B = %.2f' % B)
+            # # if verbose and verbose_count % verbose_every == 0:
+            #     ut, lt = crit_a_idx
+            #     print('Best: %d (mean:%.10f, n: %d, lb:%.4f)' %
+            #           (lt, means[lt], n_samples[lt], lb[lt]), end=' ')
+            #     print('Worst: %d (mean:%.4f, n: %d, ub:%.4f)' %
+            #           (ut, means[ut], n_samples[ut], ub[ut]), end=' ')
+            #     print('B = %.2f' % B)
 
             # draw samples for each critical result, update dfas' mean, upper and lower
             # bound accuracy estimate
