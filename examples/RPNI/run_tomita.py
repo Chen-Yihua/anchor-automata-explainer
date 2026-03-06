@@ -98,6 +98,7 @@ for lang_name, lang_class in LANGUAGES.items():
             beam_size = 1
             init_num_samples = 2000
             edit_distance = 4
+            select_by = 'accuracy'
         elif lang_code == 'L4':
             num_pos=10000
             num_neg=10000
@@ -119,6 +120,7 @@ for lang_name, lang_class in LANGUAGES.items():
             beam_size = 1
             init_num_samples = 2000
             edit_distance = 5
+            select_by = 'accuracy'
         elif lang_code == 'L6':
             num_pos=5000
             num_neg=5000
@@ -132,15 +134,16 @@ for lang_name, lang_class in LANGUAGES.items():
             use_attention = False
             test_instance = ['a', 'a', 'a', 'c', 'a', 'a', 'b', 'b']
             alphabet = ['a', 'b', 'c', 'd']
-            accuracy_threshold = 0.9
+            accuracy_threshold = 0.8
             state_threshold = 5
-            delta = 0.01
-            tau = 0.01
+            delta = 0.1
+            tau = 0.1
             batch_size = 500
             coverage_samples = 1000
             beam_size = 1
             init_num_samples = 2000
             edit_distance = 3
+            select_by = 'accuracy'
         else:  # L7
             num_pos=5000
             num_neg=5000
@@ -154,7 +157,7 @@ for lang_name, lang_class in LANGUAGES.items():
             use_attention = False
             test_instance = ['a', 'a', 'b', 'a', 'a', 'b']
             alphabet = ['a', 'b', 'c', 'd']
-            accuracy_threshold = 0.9
+            accuracy_threshold = 0.8
             state_threshold = 5
             delta = 0.01
             tau = 0.01
@@ -163,6 +166,7 @@ for lang_name, lang_class in LANGUAGES.items():
             beam_size = 1
             init_num_samples = 2000
             edit_distance = 5
+            select_by = 'accuracy'
 
         # Load train/test split
         import pickle
@@ -220,13 +224,13 @@ for lang_name, lang_class in LANGUAGES.items():
             edit_distance=edit_distance,
             accuracy_threshold=accuracy_threshold,
             state_threshold=state_threshold,
+            select_by=select_by,
             delta=delta,
             tau=tau,
             beam_size=beam_size,
             batch_size=batch_size,
             init_num_samples=init_num_samples,
             verbose=True,
-            constants=[],
             output_dir=output_dir,
         )
         learning_time = time.time() - start_time

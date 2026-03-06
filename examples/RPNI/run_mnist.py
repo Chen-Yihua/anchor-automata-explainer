@@ -21,9 +21,9 @@ from sklearn.metrics import accuracy_score
 import pickle
 from learner import AUTO_INSTANCE
 
-output_dir = "test_result/TestMnistRPNI2"
+output_dir = "test_result/TestMnistRPNI_2"
 os.makedirs(output_dir, exist_ok=True)
-txt_path = os.path.join(output_dir, "TestMnistRPNI2.txt")
+txt_path = os.path.join(output_dir, "TestMnistRPNI_2.txt")
 with open(txt_path, "w", encoding="utf-8") as log_file:
     sys.stdout = Tee(sys.stdout, log_file)
 
@@ -88,8 +88,8 @@ with open(txt_path, "w", encoding="utf-8") as log_file:
     select_by = 'accuracy'
     accuracy_threshold = 0.8
     state_threshold = 5
-    delta = 0.01
-    tau = 0.01
+    delta = 0.05
+    tau = 0.05
     batch_size = 2000
     coverage_samples = 1000
     beam_size = 1
@@ -111,8 +111,8 @@ with open(txt_path, "w", encoding="utf-8") as log_file:
         delta=delta,
         tau=tau,
         beam_size=beam_size,
-        max_anchor_size=max_anchor_size,
-        coverage_samples=coverage_samples,
+        # max_anchor_size=max_anchor_size,
+        # coverage_samples=coverage_samples,
         batch_size=batch_size,
         init_num_samples=init_num_samples,
         output_dir=output_dir,
