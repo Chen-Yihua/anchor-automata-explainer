@@ -785,23 +785,6 @@ class DFALearner(BaseAutomataLearner):
 
         return dot_content
 
-        # Save to file
-        dot_content = "\n".join(lines)
-        dot_path = os.path.join(output_dir, filename)
-        with open(dot_path, "w") as f:
-            f.write(dot_content)
-
-        # Try to render with graphviz if available
-        # try:
-        #     from graphviz import Source
-        #     src = Source(dot_content)
-        #     src.render(os.path.join(output_dir, "dfa_graph"), format="png", cleanup=True)
-        #     print(f"DFA visualization saved as {output_dir}/dfa_graph.png")
-        # except ImportError:
-        #     print(f"DFA DOT saved as {dot_path} (install graphviz for PNG)")
-
-        return dot_content
-
 
     def create_automata_sized(self, positive_samples, negative_samples, alphabet):
         """Create DFA with size-capped learning"""
@@ -1091,12 +1074,11 @@ class DFALearner(BaseAutomataLearner):
     
     def collect_merge_pairs_simple(self, dfa, data, labels, max_pairs=20):
         """
-        簡單高效的狀態合併：只看 label 分布相似性
         優先合併 label 分布一致的狀態
         """
         from collections import defaultdict
         
-        # 統計 label 分布
+        #  label 分布
         state_label_dist = defaultdict(lambda: defaultdict(int))
         for seq, y in zip(data, labels):
             cur = dfa.initial_state
@@ -1231,9 +1213,155 @@ class DFALearner(BaseAutomataLearner):
         gc.collect()
         return new_dfas
 
-    def _propose_delta(self, dfa, state, data, labels, seen_signatures):
+    def _aggregate_cxp_analysis(self, dfa, data, labels, misclassified_paths, alphabet_map, dfa_sig, top_k=10, max_samples=50):
         """
-        Propose new DFAs by modifying transitions based on CXP (Contrastive Explanation).
+        Aggregate CXP analysis over multiple misclassified paths to compute blame scores.
+        
+        This method:
+        1. Collects paths through DFA for each misclassified sample
+        2. Computes CXP (Contrastive eXplanation Path) for each sample
+        3. Counts edge occurrences and CXP hits for each edge
+        4. Computes blame score for each edge
+        5. Returns top-K blamed edges sorted by blame score
+        
+        Parameters
+        ----------
+        dfa : Dfa
+            The DFA to analyze
+        data : list
+            Full dataset (used for checking paths)
+        labels : np.ndarray
+            Labels for dataset
+        misclassified_paths : list
+            List of misclassified sequences (error samples)
+        alphabet_map : dict
+            Mapping from symbols to alphabet indices for CXP computation
+        dfa_sig : int
+            Serialized signature of DFA for caching CXP results
+        top_k : int
+            Number of blamed edges to return (default: 10)
+        max_samples : int
+            Maximum number of samples to process for efficiency (default: 50)
+            
+        Returns
+        -------
+        dict
+            Contains:
+            - 'blamed_edges': list of (src_state_id, symbol, blame_score) tuples, sorted descending
+            - 'edge_stats': dict of {(src_state_id, symbol): {'occ': count, 'cxp': count}}
+            - 'total_cxp_computed': number of CXP computations performed
+            
+        Notes
+        -----
+        - Blame score formula: blame(edge) = cxp_hits(edge) / (occ(edge) + 1)
+        - The +1 in denominator prevents division by zero
+        - CXP results are filtered to keep only shortest explanations (most reliable)
+        - Path indices are mapped directly to CXP indices for hit counting
+        """
+        from dfa_optimization import _cxp_cache
+        
+        edge_occ = defaultdict(int)  # (src_state_id, symbol) -> count of paths using this edge
+        edge_cxp = defaultdict(int)  # (src_state_id, symbol) -> count of CXP hits on this edge
+        cxp_computed = 0
+
+        # Limit samples for efficiency
+        if max_samples and len(misclassified_paths) > max_samples:
+            misclassified_paths = random.sample(misclassified_paths, max_samples)
+        
+        print("Computing CXP...")
+        # For selected misclassified path, compute path and CXP
+        for idx, test_word in enumerate(misclassified_paths):
+            # Trace path through DFA
+            current = dfa.initial_state
+            path = []  # List of (state_id, symbol, next_state_id)
+            for sym in test_word:
+                next_state = current.transitions.get(sym)
+                if next_state is None:
+                    break
+                # Store state_id instead of state objects
+                path.append((current.state_id, sym, next_state.state_id))
+                edge_occ[(current.state_id, sym)] += 1
+                current = next_state
+            
+            if not path:
+                continue
+            
+            # Compute CXP for this word
+            try:
+                # Encode word for this iteration
+                encoded_word = [alphabet_map[sym] for sym in test_word if sym in alphabet_map]
+                if not encoded_word:
+                    continue
+                
+                # Define compute function that captures encoded_word for this iteration
+                def compute_cxp_for_word():
+                    """Compute CXP for a single word."""
+                    explanation_engine = ExplainLanguage()
+                    return explanation_engine.explain_word(
+                        "dfa_explicit.mata",
+                        from_mata=True,
+                        word=encoded_word,
+                        ascii=encoded_word,
+                        target_axp=False,
+                        bootstrap_cxp_size_1=False,
+                        print_exp=False,
+                    )
+                
+                # Use cache if available
+                if OPTIMIZATION_AVAILABLE and _cxp_cache is not None:
+                    result = _cxp_cache.get_cxp(dfa_sig, test_word, compute_cxp_for_word)
+                else:
+                    result = compute_cxp_for_word()
+                cxp_computed += 1
+                
+                cxp_raw = result.get("cxps", [])
+                if not cxp_raw:
+                    continue
+                
+                # for each misclassified sample, select shortest explanations
+                if cxp_raw:
+                    min_len = min(len(seq) for seq in cxp_raw)
+                    cxp_raw = [seq for seq in cxp_raw if len(seq) == min_len]
+                
+                # Aggregate CXP hits
+                # CXP returns indices of positions in the original word
+                for seq in cxp_raw:
+                    # seq is a list of indices into test_word, need to map to path
+                    for pos_in_word in seq:
+                        if 0 <= pos_in_word < len(path):
+                            src_state_id, sym, _ = path[pos_in_word]
+                            edge_cxp[(src_state_id, sym)] += 1
+            
+            except Exception as e:
+                print(f"[Warning] CXP computation failed for sample {idx}: {e}")
+                continue
+            
+        # Compute blame score: blame(e) = cxp[e] / (occ[e] + 1)
+        blame_scores = []
+        for edge, occ_count in edge_occ.items():
+            cxp_count = edge_cxp[edge]
+            blame_score = cxp_count / (occ_count + 1.0)  # +1 to avoid division by zero
+            blame_scores.append((edge[0], edge[1], blame_score, occ_count, cxp_count))
+        
+        # Sort by blame score descending
+        blame_scores.sort(key=lambda x: x[2], reverse=True)
+        print(f"Computed CXP for {cxp_computed} samples, found {len(blame_scores)} blamed edges")
+
+        # Return top-K
+        result = {
+            'blamed_edges': [(src, sym, score) for src, sym, score, _, _ in blame_scores[:top_k]],
+            'edge_stats': {(src, sym): {'occ': occ, 'cxp': cxp} 
+                          for src, sym, _, occ, cxp in blame_scores},
+            'total_cxp_computed': cxp_computed
+        }
+        return result
+
+    def _propose_delta(self, dfa, state, data, labels, seen_signatures, top_k_blamed_edges=20, max_misclassified_samples=50):
+        """
+        Propose new DFAs by modifying transitions based on aggregated CXP analysis.
+        
+        Uses CXP aggregation over multiple misclassified paths to identify the most
+        problematic transitions (edges with high blame score), then proposes fixes.
         
         Parameters
         ----------
@@ -1245,163 +1373,143 @@ class DFALearner(BaseAutomataLearner):
             Training data
         labels : np.ndarray
             Labels for training data
-        symbols : list
-            Available symbols/alphabet
         seen_signatures : set
             Set of already seen DFA signatures to avoid duplicates
+        top_k_blamed_edges : int
+            Number of top blamed edges to try modifying (default: 10)
+        max_misclassified_samples : int
+            Maximum number of misclassified samples to process (default: 50)
             
         Returns
         -------
         list
             List of new DFAs created by transition modification
         """
-        from dfa_optimization import _cxp_cache
-        
-        def compute_cxp():
-            explanation_engine = ExplainLanguage()
-            return explanation_engine.explain_word(
-                "dfa_explicit.mata",
-                from_mata=True,
-                word=encoded_word,
-                ascii=encoded_word,
-                target_axp=False,
-                bootstrap_cxp_size_1=False,
-                print_exp=False,
-            )
-
         new_dfas = [dfa]  # Always include the original DFA
         
-        # Find misclassified paths
+        # Identify misclassified samples
         if OPTIMIZATION_AVAILABLE and BatchPathChecker is not None:
             accepts = BatchPathChecker.check_paths_batch(dfa, data)
         else:
             accepts = np.array([self.check_path_accepted(dfa, p) for p in data])
+        
         false_accept_indices = np.where((labels == 0) & (accepts == True))[0]
         true_reject_indices = np.where((labels == 1) & (accepts == False))[0]
         
-        if len(false_accept_indices) == 0 and len(true_reject_indices) == 0:
-            print("No counterfactual found, skipping CXP-guided DELTA.")
+        misclassified_indices = np.concatenate([false_accept_indices, true_reject_indices])
+        if len(misclassified_indices) == 0:
+            print("No misclassified samples found, skipping.")
             return new_dfas
         
-        false_accept_paths = [data[i] for i in false_accept_indices]
-        true_reject_paths = [data[i] for i in true_reject_indices]
-        candidate_paths = false_accept_paths + true_reject_paths
-        test_word = min(candidate_paths, key=len)
-        print("Find counterfactual:", test_word)
-
-        # Get CXP explanation
-        _, alphabet_map, _ = dfa_to_mata(dfa, "dfa_explicit.mata")
-        encoded_word = [alphabet_map[sym] for sym in test_word if sym in alphabet_map]
-        dfa_sig = self.serialize_automaton(dfa)
+        misclassified_paths = [data[i] for i in misclassified_indices]
+        print(f"Found {len(misclassified_paths)} misclassified samples (false_accept={len(false_accept_indices)}, true_reject={len(true_reject_indices)})")
         
-        # CXP 緩存
-        if OPTIMIZATION_AVAILABLE and _cxp_cache is not None:
-            result = _cxp_cache.get_cxp(dfa_sig, test_word, compute_cxp)
-            print(f"  [OPT-CXP] 使用 CXP 緩存 (快取大小: {len(_cxp_cache.cache)})")
-        else:
-            result = compute_cxp()
-        cxp_raw = result.get("cxps", [])
-        
-        if not cxp_raw:
-            print("No cxp found, skipping.")
+        # Export DFA to mata format for CXP computation
+        try:
+            _, alphabet_map, _ = dfa_to_mata(dfa, "dfa_explicit.mata")
+            dfa_sig = self.serialize_automaton(dfa)
+        except Exception as e:
+            print(f"Failed to export DFA to mata: {e}")
             return new_dfas
-
-        # Create new DFAs based on CXP
-        if cxp_raw:
-            min_len = min(len(seq) for seq in cxp_raw)
-            cxp_raw = [seq for seq in cxp_raw if len(seq) == min_len]
-        cxp_groups = []
-        for seq in cxp_raw:
-            cxp_group_index = [x for x in seq if 0 <= x < len(test_word)] 
-            cxp_group = [test_word[x] for x in cxp_group_index]
-            if cxp_group:
-                cxp_groups.append((cxp_group_index, cxp_group))
         
-        for cxp_group_index, cxp_group in cxp_groups:
-            current = dfa.initial_state
-            path = []
-            for sym in test_word:
-                next_state = current.transitions.get(sym)
-                if next_state is None:
-                    break
-                path.append((current, sym, next_state))
-                current = next_state
-
-            # 預計算反向可達性：哪些狀態可以走到接受狀態（只算一次，用於快速跳過）
-            reverse_adj = defaultdict(set)
-            for st in dfa.states:
-                for sym_r, nxt in st.transitions.items():
-                    reverse_adj[nxt].add(st)
-            can_reach_accepting = set()
-            bfs_q = [st for st in dfa.states if st.is_accepting]
-            while bfs_q:
-                st = bfs_q.pop()
-                if st not in can_reach_accepting:
-                    can_reach_accepting.add(st)
-                    for prev in reverse_adj[st]:
-                        bfs_q.append(prev)
-            # 建立 state_id → 原始 DFA state 的映射，用於快速查找 old_dst 對應的原始狀態
-            orig_state_by_id = {st.state_id: st for st in dfa.states}
-
-            # Try redirecting transitions at CXP indices to all possible target states
-            for target in dfa.states:
-                # new_dfa = self.clone_automaton(dfa)
-                new_dfa = dfa.copy()
-                modified = False
-
-                for idx in cxp_group_index:
-                    if idx < len(path):
-                        s, sym, _ = path[idx]
-                        s_new = next(x for x in new_dfa.states if x.state_id == s.state_id)
-                        target_new = next(x for x in new_dfa.states if x.state_id == target.state_id)
-                    
-                        if sym in s_new.transitions:
-                            old_dst = s_new.transitions[sym]
-                            # Skip if already pointing to target
-                            if old_dst.state_id == target_new.state_id:
-                                continue
-
-                            # old_dst 對應的原始狀態是否能走到接受狀態
-                            # 如果不能，redirect 不影響接受狀態可達性，直接允許
-                            orig_old = orig_state_by_id.get(old_dst.state_id)
-                            need_check = orig_old is not None and orig_old in can_reach_accepting
-
-                            s_new.transitions[sym] = target_new
-
-                            if need_check:
-                                # old_dst 原本能走到接受狀態，需要確認 redirect 後接受狀態仍可達
-                                reachable = set()
-                                queue = [new_dfa.initial_state]
-                                while queue:
-                                    st = queue.pop()
-                                    if st not in reachable:
-                                        reachable.add(st)
-                                        for nxt in st.transitions.values():
-                                            queue.append(nxt)
-                                if not any(st.is_accepting for st in reachable):
-                                    s_new.transitions[sym] = old_dst
-                                    print(f"  [SKIP] Redirect {s_new.state_id} --{sym}--> {target_new.state_id} would make accepting states unreachable, reverting.")
-                                    continue
-
-                            print(f"[CXP index {idx}] Redirected: {s_new.state_id} --{sym}--> {old_dst.state_id} → {target_new.state_id}")
-                            modified = True
-
-                if modified:
-                    remove_unreachable_states(new_dfa)
-                    if not any(st.is_accepting for st in new_dfa.states):
-                        print(f"  [SKIP] DELTA redirect leaves no accepting state, skipping.")
-                        del new_dfa
-                        gc.collect()
-                        continue
-
-                    sig = self.serialize_automaton(new_dfa)
-                    if sig not in seen_signatures:
-                        seen_signatures.add(sig)
-                        self.update_state_metrics(
-                            state, dfa, new_dfa, data, labels, f"DELTA(CXP-{cxp_group}→{target.state_id})"
-                        )
-                        new_dfas.append(new_dfa)
+        # Aggregate CXP analysis
+        try:
+            cxp_result = self._aggregate_cxp_analysis(
+                dfa, data, labels, misclassified_paths, alphabet_map, dfa_sig,
+                top_k=top_k_blamed_edges,
+                max_samples=max_misclassified_samples
+            )
+            blamed_edges = cxp_result['blamed_edges']
+        except Exception as e:
+            print(f"CXP aggregation failed: {e}")
+            return new_dfas
         
+        if not blamed_edges:
+            print("No blamed edges found after CXP aggregation.")
+            return new_dfas
+        
+        # Build reachability information
+        reverse_adj = defaultdict(set)
+        for st in dfa.states:
+            for _, nxt in st.transitions.items():
+                reverse_adj[nxt].add(st)
+        
+        can_reach_accepting = set()
+        bfs_q = [st for st in dfa.states if st.is_accepting]
+        while bfs_q:
+            st = bfs_q.pop()
+            if st not in can_reach_accepting:
+                can_reach_accepting.add(st)
+                for prev in reverse_adj[st]:
+                    bfs_q.append(prev)
+        
+        orig_state_by_id = {st.state_id: st for st in dfa.states}
+        
+        # Only process the highest blamed edge
+        if not blamed_edges:
+            print("No blamed edges to process")
+            return new_dfas
+        
+        src_state_id, symbol, blame_score = blamed_edges[0]  # Only take the top blamed edge
+        src_state = orig_state_by_id.get(src_state_id)
+        if src_state is None or symbol not in src_state.transitions:
+            print(f"Cannot process top blamed edge: {src_state_id} --{symbol}-->")
+            return new_dfas
+        
+        old_target = src_state.transitions[symbol]
+        print(f"Processing highest blamed edge: {src_state_id} --{symbol}--> {old_target.state_id} (blame={blame_score:.4f})")
+        
+        # Try redirecting this edge to different target states
+        for target_state in dfa.states:
+            if target_state.state_id == old_target.state_id:
+                continue  # Skip if no change
+            
+            new_dfa = dfa.copy()
+            src_new = next(x for x in new_dfa.states if x.state_id == src_state_id)
+            target_new = next(x for x in new_dfa.states if x.state_id == target_state.state_id)
+            
+            old_target_new = src_new.transitions[symbol]
+            src_new.transitions[symbol] = target_new
+            
+            # Check if accepting states are still reachable
+            if old_target_new in can_reach_accepting:
+                reachable = set()
+                queue = [new_dfa.initial_state]
+                while queue:
+                    st = queue.pop()
+                    if st not in reachable:
+                        reachable.add(st)
+                        for nxt in st.transitions.values():
+                            queue.append(nxt)
+                
+                if not any(st.is_accepting for st in reachable):
+                    # Revert if no accepting states reachable
+                    del new_dfa
+                    gc.collect()
+                    continue
+            
+            remove_unreachable_states(new_dfa)
+            
+            # Check for accepting states
+            if not any(st.is_accepting for st in new_dfa.states):
+                del new_dfa
+                gc.collect()
+                continue
+            
+            sig = self.serialize_automaton(new_dfa)
+            if sig not in seen_signatures:
+                seen_signatures.add(sig)
+                self.update_state_metrics(
+                    state, dfa, new_dfa, data, labels, 
+                    f"DELTA-AGG(blame={blame_score:.2f})"
+                )
+                new_dfas.append(new_dfa)
+                print(f"→ Generated new candidate: {src_state_id} --{symbol}--> {target_state.state_id}")
+            else:
+                del new_dfa
+                gc.collect()
+        
+        print(f"Generated {len(new_dfas) - 1} new candidate DFAs")
         return new_dfas
 
     def propose_automata(self, dfas, state, iteration, previous_best: list, output_dir: str, beam_size: int = 10):
