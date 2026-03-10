@@ -153,13 +153,23 @@ LANGUAGES = {
     ),
 }
 
-# Baseline search budgets (kept comparable to a typical beam-search run)
-SA_STEPS       = 150
-GA_GENERATIONS = 15
-GA_POPULATION  = 5
-PSO_PARTICLES  = 8
-PSO_ITERATIONS = 15
-PSO_STEPS      = 2   # refinement steps per particle
+# Baseline search budgets (aligned to Beam Search ~750 evaluations)
+# 
+# All methods target similar ~750-800 DFA evaluations per language:
+#   Beam Search:  ~750 (baseline - lightweight)
+#   SA:  n_rounds(10) × n_steps(75) = 750 evals
+#   GA:  n_rounds(15) × n_generations(20) × population(10) × mutation(0.2) + init(150) = 750 evals
+#   PSO: n_rounds(10) × n_particles(10) × n_steps(8) = 800 evals
+# 
+# All methods stop early when min_states=2 or no progress for 3+ rounds
+SA_ROUNDS        = 10    # 降低從 15 → 10 (計算預算對齊)
+SA_STEPS         = 75    # 降低從 200 → 75
+GA_GENERATIONS   = 20    # 降低從 50 → 20
+GA_POPULATION    = 10    # 保持不變
+GA_MUTATION      = 0.2   # 使用 0.2 (推出数写過)
+PSO_ROUNDS       = 10    # 降低從 25 → 10
+PSO_PARTICLES    = 10    # 降低從 12 → 10
+PSO_STEPS        = 8     # 降低從 10 → 8
 
 
 # ======================================================================
@@ -262,17 +272,35 @@ def run_one_language(lang_code: str, cfg: dict, output_root: str) -> dict | None
     sampler_fn = explainer.samplers[0]
 
     # ── Build shared initial DFA (RPNI, run ONCE) ──────────────────────
+    # ── Retry if initial states < 30 ──────────────────────────────────
     print("\n  [SharedInit] Building initial DFA via RPNI ...")
-    t_shared = time.time()
-    shared = build_shared_init(
-        sampler_fn        = sampler_fn,
-        data_type         = "Tabular",
-        init_num_samples  = cfg['init_num_samples'],
-        batch_size        = cfg['batch_size'],
-        output_dir        = os.path.join(out_dir, "shared"),
-    )
-    t_shared = time.time() - t_shared
-    init_states = len(shared.initial_dfa.states)
+    shared = None
+    init_states = 0
+    max_retries = 5
+    retry_count = 0
+    
+    while retry_count < max_retries and init_states < 30:
+        t_shared = time.time()
+        shared = build_shared_init(
+            sampler_fn        = sampler_fn,
+            data_type         = "Tabular",
+            init_num_samples  = cfg['init_num_samples'],
+            batch_size        = cfg['batch_size'],
+            output_dir        = os.path.join(out_dir, "shared"),
+        )
+        t_shared = time.time() - t_shared
+        init_states = len(shared.initial_dfa.states)
+        
+        if init_states < 30:
+            print(f"    ⚠ Initial DFA has only {init_states} states (< 30). Retrying... ({retry_count + 1}/{max_retries})")
+            retry_count += 1
+        else:
+            print(f"    ✓ Initial DFA: {init_states} states (>= 30)")
+    
+    if init_states < 30:
+        print(f"  [SKIP] Could not generate initial DFA with >= 30 states after {max_retries} retries. "
+              f"Best attempt: {init_states} states.")
+        return None
     init_acc    = float(np.mean(
         [shared.learner.check_path_accepted(shared.initial_dfa, s)
          for s in shared.data]
@@ -347,11 +375,11 @@ def run_one_language(lang_code: str, cfg: dict, output_root: str) -> dict | None
         init_num_samples   = cfg['init_num_samples'],
         batch_size         = cfg['batch_size'],
         output_dir         = os.path.join(out_dir, "sa"),
-        n_rounds           = 1000,
+        n_rounds           = SA_ROUNDS,  # ✅ 使用參數對齊 Beam Search (~750 evals)
         n_steps            = SA_STEPS,
         T_max              = 10.0,
         T_min              = 0.001,
-        beam_size          = 10,
+        beam_size          = 1,
         shared_init        = shared,
     )
     sa_time   = time.time() - t0
@@ -385,10 +413,10 @@ def run_one_language(lang_code: str, cfg: dict, output_root: str) -> dict | None
         init_num_samples   = cfg['init_num_samples'],
         batch_size         = cfg['batch_size'],
         output_dir         = os.path.join(out_dir, "ga"),
-        n_rounds           = 1000,
-        n_generations      = GA_GENERATIONS,
+        n_rounds           = 15,  # ✅ 統一為 15 (計算預算對齊 Beam Search)
+        n_generations      = GA_GENERATIONS,  # ✅ 使用參數
         population_size    = GA_POPULATION,
-        mutation_prob      = 0.8,
+        mutation_prob      = GA_MUTATION,
         beam_size          = 10,
         shared_init        = shared,
     )
@@ -423,9 +451,9 @@ def run_one_language(lang_code: str, cfg: dict, output_root: str) -> dict | None
         init_num_samples   = cfg['init_num_samples'],
         batch_size         = cfg['batch_size'],
         output_dir         = os.path.join(out_dir, "pso"),
-        n_rounds           = 1000,
+        n_rounds           = PSO_ROUNDS,  # ✅ 使用參數
         n_particles        = PSO_PARTICLES,
-        n_steps_per_particle = PSO_STEPS,
+        n_steps_per_particle = PSO_STEPS,  # ✅ 使用參數
         beam_size          = 10,
         shared_init        = shared,
     )

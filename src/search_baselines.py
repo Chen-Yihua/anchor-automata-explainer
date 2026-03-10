@@ -121,12 +121,21 @@ def _compute_accuracy(dfa, data: list, labels: np.ndarray) -> float:
     return correct / len(lbl)
 
 
-def _rank_candidates(candidates: list, data: list, labels: np.ndarray) -> list:
+def _rank_candidates(candidates: list, data: list, labels: np.ndarray, 
+                     accuracy_threshold: float = 0.9) -> list:
     """
-    Rank candidates by accuracy (descending).
-    Since propose_automata naturally reduces states, we only sort by accuracy.
+    Rank candidates with multi-objective logic (matches SA/Beam Search).
     
-    Returns sorted list (best accuracy first): [{'dfa': ..., 'accuracy': ..., 'states': ...}, ...]
+    Strategy:
+    ─────── 
+    1. Filter candidates into two groups:
+       - Qualified: accuracy >= threshold (prefer fewer states)
+       - Unqualified: accuracy < threshold (lowest priority)
+    2. Sort qualified by states (ascending), then unqualified by accuracy (descending)
+    
+    This allows accuracy trade-off while respecting constraints.
+    
+    Returns sorted list (best first): [{'dfa': ..., 'accuracy': ..., 'states': ...}, ...]
     """
     scored = []
     for dfa in candidates:
@@ -137,9 +146,16 @@ def _rank_candidates(candidates: list, data: list, labels: np.ndarray) -> list:
             'states': len(dfa.states),
         })
     
-    # Sort by accuracy descending (best first)
-    scored.sort(key=lambda x: x['accuracy'], reverse=True)
-    return scored
+    # Separate qualified and unqualified
+    qualified = [s for s in scored if s['accuracy'] >= accuracy_threshold]
+    unqualified = [s for s in scored if s['accuracy'] < accuracy_threshold]
+    
+    # Sort each group
+    qualified.sort(key=lambda x: x['states'])  # Fewer states = better
+    unqualified.sort(key=lambda x: x['accuracy'], reverse=True)  # Higher acc = better
+    
+    # Qualified first, then unqualified as fallback
+    return qualified + unqualified
 
 
 def _dlow_bernoulli(p: np.ndarray, level: np.ndarray, n_iter: int = 10) -> np.ndarray:
@@ -515,17 +531,25 @@ class DFAAnnealer(Annealer):
     def __init__(self, initial_dfa, data: list, labels: np.ndarray, 
                  state: dict, learner, iteration: int, output_dir: str,
                  beam_size: int, all_history: list, seen_ids: set,
-                 T_max: float = 10.0, T_min: float = 0.001, n_steps: int = 100):
+                 T_max: float = 10.0, T_min: float = 0.001, n_steps: int = 100,
+                 accuracy_threshold: float = 0.9, state_threshold: int = 5):
         self.current_dfa = initial_dfa.copy()
         self.best_dfa = initial_dfa.copy()
-        self.best_energy = 1.0 - _compute_accuracy(initial_dfa, data, labels)
+        
+        # Optimization constraints (initialize FIRST, needed by _compute_energy)
+        self.accuracy_threshold = accuracy_threshold
+        self.state_threshold = state_threshold
+        self.initial_states = len(initial_dfa.states)
+        
+        # Now compute best_energy after initial_states is set
+        self.best_energy, self.best_acc = self._compute_energy(initial_dfa, data, labels, accuracy_threshold)
         
         self.data = data
         self.labels = labels
-        self.state = state
+        self.learner_state = state
         self.learner = learner
         self.round_idx = iteration  # Round number (for tracking)
-        self.local_iteration = 0    # Local iteration counter (incremented in each move())
+        self.local_iteration = 1    # Start at 1: metrics are pre-initialized by sa_dfa_search
         self.output_dir = output_dir
         self.beam_size = beam_size
         self.all_history = all_history
@@ -550,25 +574,63 @@ class DFAAnnealer(Annealer):
             self.local_iteration += 1
             
             candidates = _AUTO_INSTANCE.propose_automata(
-                [self.current_dfa], self.state, effective_iteration, 
+                [self.current_dfa], self.learner_state, effective_iteration, 
                 [self.current_dfa], self.output_dir, self.beam_size
             )
-            if candidates:
+            
+            # Debug: log candidate generation
+            old_states = len(self.current_dfa.states)
+            op_type = "DELETE/MERGE" if effective_iteration % 2 == 0 else "DELTA"
+            
+            if not candidates:
+                # Debug output for empty candidates
+                print(f"        [move] iter={effective_iteration} ({op_type}): NO candidates generated", flush=True)
+            else:
                 self.current_dfa = random.choice(candidates)
+                new_states = len(self.current_dfa.states)
+                print(f"        [move] iter={effective_iteration} ({op_type}): {len(candidates)} candidates, selected {new_states} states (was {old_states})", flush=True)
         except Exception as e:
             # If generation fails, keep current
-            pass
+            print(f"        [move] ERROR: {e}", flush=True)
+    
+    def _compute_energy(self, dfa, data, labels, threshold):
+        """Multi-objective energy: accuracy constraint + state minimization.
+        
+        Strategy (matches Beam Search 'accuracy' mode):
+        ─────────────────────────────────────────────
+        If acc >= threshold:
+            energy = num_states / initial_states  (minimize states)
+        Else:
+            energy = 1.0 + (threshold - acc) * 10  (strong penalty)
+            
+        This allows accuracy to decrease (trade-off) while staying in bounds.
+        """
+        acc = _compute_accuracy(dfa, data, labels)
+        n_states = len(dfa.states)
+        
+        if acc >= threshold:
+            # Constraint satisfied: optimize state count
+            # Normalize: [min_states=2, max_states] → [0, 1]
+            energy = n_states / max(self.initial_states, 10)
+        else:
+            # Constraint violated: penalize hard
+            # penalty grows as accuracy drops further below threshold
+            accuracy_deficit = threshold - acc
+            energy = 1.0 + accuracy_deficit * 10.0  # e.g., 0.85 gap → energy=1.85
+        
+        return energy, acc
     
     def energy(self):
-        """Compute energy = 1 - accuracy (lower is better)."""
-        acc = _compute_accuracy(self.current_dfa, self.data, self.labels)
-        energy = 1.0 - acc
+        """Compute multi-objective energy (lower = better)."""
+        energy, acc = self._compute_energy(self.current_dfa, self.data, self.labels, 
+                                           self.accuracy_threshold)
         
         # Track best found
         if energy < self.best_energy:
             self.best_energy = energy
+            self.best_acc = acc
             self.best_dfa = self.current_dfa.copy()
-            _add_to_history(self.all_history, self.seen_ids, self.best_dfa, 1.0 - energy)
+            _add_to_history(self.all_history, self.seen_ids, self.best_dfa, acc)
         
         # Also add to history for exploration tracking
         _add_to_history(self.all_history, self.seen_ids, self.current_dfa, acc)
@@ -629,6 +691,10 @@ def sa_dfa_search(sampler_fn: Callable,
     _add_to_history(all_history, seen_ids, initial_dfa, init_acc)
     current_beam = [initial_dfa]
     
+    # Pre-initialize state metrics (iteration=0) before search begins
+    # This avoids wasting SA's first move on metric initialization
+    _AUTO_INSTANCE.propose_automata([initial_dfa], state, 0, [initial_dfa], output_dir, beam_size)
+    
     round_idx = 0
     while round_idx < n_rounds:
         round_idx += 1
@@ -645,13 +711,14 @@ def sa_dfa_search(sampler_fn: Callable,
             annealer = DFAAnnealer(
                 seed_dfa, data, labels, state, _AUTO_INSTANCE, round_idx,
                 output_dir, beam_size, all_history, seen_ids,
-                T_max=T_max, T_min=T_min, n_steps=n_steps
+                T_max=T_max, T_min=T_min, n_steps=n_steps,
+                accuracy_threshold=accuracy_threshold, state_threshold=state_threshold
             )
             
             # Run SA (returns placeholder state and energy, use annealer.best_dfa instead)
             _, best_energy = annealer.anneal()
             best_dfa = annealer.best_dfa
-            best_acc_sa = 1.0 - annealer.best_energy
+            best_acc_sa = annealer.best_acc
             
             print(f"    SA converged: {len(best_dfa.states)} states, accuracy={best_acc_sa:.4f}")
             
@@ -675,6 +742,10 @@ def sa_dfa_search(sampler_fn: Callable,
                     batch_size=batch_size,
                     max_samples=kwargs.get('max_samples', 5000)
                 )
+                # 更新 state 字典
+                state['data'] = list(data)
+                state['labels'] = labels.copy() if isinstance(labels, np.ndarray) else np.array(labels)
+                state['current_idx'] = len(data)
                 print(f"  [SA] Training data size after KL-LUCB: {len(data)} samples")
         
         # Check stopping condition
@@ -709,7 +780,9 @@ def sa_dfa_search(sampler_fn: Callable,
 
 # DEAP requires global creator registration; guard against double-registration.
 if not hasattr(creator, 'DFAFitness'):
-    creator.create("DFAFitness", base.Fitness, weights=(1.0,))
+    # Multi-objective fitness: (1) constraint satisfaction, (2) optimization target
+    # Both should be maximized (weights = (1.0, 1.0))
+    creator.create("DFAFitness", base.Fitness, weights=(1.0, 1.0))
 if not hasattr(creator, 'DFAIndividual'):
     creator.create("DFAIndividual", list, fitness=creator.DFAFitness)
 
@@ -766,11 +839,21 @@ def ga_dfa_search(sampler_fn: Callable,
     all_history: List[dict] = []
     seen_ids: set = set()
     min_states = 2
-    iteration_counter = [0]  # Mutable container for tracking iterations across mutations
-
+    iteration_counter = [1]  # Start at 1: metrics are pre-initialized below
+    
     # Seed history with initial DFA
     init_acc = _compute_accuracy(initial_dfa, data, labels)
     _add_to_history(all_history, seen_ids, initial_dfa, init_acc)
+    init_states = len(initial_dfa.states)
+    
+    best_states_prev_round = init_states
+    no_improvement_rounds = 0
+    max_no_improvement_rounds = 3  # 3輪無進度就停止
+    
+    print(f"[GA-DEAP] Initial DFA: {init_states} states, {init_acc:.4f} accuracy")
+    
+    # Pre-initialize state metrics (iteration=0) before search begins
+    _AUTO_INSTANCE.propose_automata([initial_dfa], state, 0, [initial_dfa], output_dir, beam_size)
 
     # -------- DEAP toolbox --------
     toolbox = base.Toolbox()
@@ -780,11 +863,29 @@ def ga_dfa_search(sampler_fn: Callable,
         return creator.DFAIndividual([dfa_seed.copy()])
 
     def _evaluate(individual):
-        """Evaluate fitness = accuracy."""
+        """Evaluate fitness with constraint optimization.
+        
+        Multi-objective (lexicographic):
+          1. Constraint satisfaction: 1 if acc >= threshold, else 0
+          2. Optimization target:
+             - If qualified: -states (fewer is better)
+             - If unqualified: accuracy (higher is better)
+        
+        DEAP maximizes fitness, so we negate states.
+        """
         dfa = individual[0]
         acc = _compute_accuracy(dfa, data, labels)
+        n_states = len(dfa.states)
         _add_to_history(all_history, seen_ids, dfa, acc)
-        return (acc,)
+        
+        # Multi-objective fitness tuple (DEAP uses lexicographic comparison)
+        if acc >= accuracy_threshold:
+            # Constraint satisfied: optimize states (fewer = better)
+            # Negate so maximization minimizes states
+            return (1, -n_states)
+        else:
+            # Constraint violated: maximize accuracy as fallback
+            return (0, acc)
 
     def _mutate(individual, round_idx):
         """Mutation operator: apply propose_automata to generate neighbor."""
@@ -798,6 +899,7 @@ def ga_dfa_search(sampler_fn: Callable,
             if candidates:
                 individual[0] = random.choice(candidates)
         except Exception as e:
+            print(f"        [mutate] ERROR: {e}", flush=True)
             pass  # Keep current if generation fails
         del individual.fitness.values
         return (individual,)
@@ -856,8 +958,9 @@ def ga_dfa_search(sampler_fn: Callable,
             # Statistics
             fits = [ind.fitness.values[0] for ind in pop]
             gen_best = max(fits)
-            print(f"    [Gen {gen + 1}] Mutated: {mutated_count}/{len(pop)}, "
-                  f"Best accuracy: {gen_best:.4f}")
+            best_states = min(len(ind[0].states) for ind in pop)
+            print(f"    [Gen {gen + 1}] Mutations: {mutated_count}/{len(pop)} individuals (prob={mutation_prob})  |  "
+                  f"Best states: {best_states}, Best fit: {gen_best:.4f}")
         
         # ---- KL-LUCB Adaptive sampling ----
         enable_kl_lucb = kwargs.get('enable_kl_lucb', True)
@@ -872,14 +975,40 @@ def ga_dfa_search(sampler_fn: Callable,
                 batch_size=batch_size,
                 max_samples=kwargs.get('max_samples', 5000)
             )
+            # 更新 state 字典
+            state['data'] = list(data)
+            state['labels'] = labels.copy() if isinstance(labels, np.ndarray) else np.array(labels)
+            state['current_idx'] = len(data)
             print(f"  [GA] Training data size after KL-LUCB: {len(data)} samples")
         
         # ---- Check stopping condition ----
         if all_history:
             best_states = min(h['states'] for h in all_history)
+            best_acc = max(h['accuracy'] for h in all_history)
+            
+            # 更詳細的狀態數跟蹤輸出
+            state_change = best_states_prev_round - best_states
+            if state_change > 0:
+                print(f"    Round Summary: States: {best_states_prev_round} → {best_states} ({state_change}↓)  |  Accuracy: {best_acc:.4f}  |  Candidates: {len(all_history)}")
+            else:
+                print(f"    Round Summary: States: {best_states} (no change)  |  Accuracy: {best_acc:.4f}  |  Candidates: {len(all_history)}")
+            
+            # 停止條件：到達最小狀態
             if best_states <= min_states:
-                print(f"  Minimum states {min_states} reached. Stopping.")
+                print(f"  ✓ Minimum states {min_states} reached. Stopping.")
                 break
+            
+            # 停止條件2：無進度（連續幾輪沒有狀態減少）
+            if best_states >= best_states_prev_round:
+                no_improvement_rounds += 1
+                print(f"  ⚠ No improvement in states: {no_improvement_rounds}/{max_no_improvement_rounds} rounds")
+                if no_improvement_rounds >= max_no_improvement_rounds:
+                    print(f"  ✓ No progress after {max_no_improvement_rounds} rounds. Stopping.")
+                    break
+            else:
+                no_improvement_rounds = 0  # 重置計數
+            
+            best_states_prev_round = best_states
         
         # ---- Elite selection: keep top beam_size for next round ----
         sorted_hist = sorted(all_history, key=lambda x: x['accuracy'], reverse=True)
@@ -889,6 +1018,15 @@ def ga_dfa_search(sampler_fn: Callable,
         print(f"  [Elite] Best accuracies (states): {top_info}")
     
     print(f"\n[GA-DEAP] Completed {round_idx} rounds, {len(all_history)} candidates total")
+    
+    # 打印最終狀態統計
+    if all_history:
+        final_best_states = min(h['states'] for h in all_history)
+        final_best_acc = max(h['accuracy'] for h in all_history)
+        state_reduction = init_states - final_best_states
+        reduction_pct = 100 * state_reduction / init_states if init_states > 0 else 0
+        print(f"[GA-DEAP] Summary: {init_states} states → {final_best_states} states ({state_reduction} reduced, {reduction_pct:.1f}%)  |  Best accuracy: {final_best_acc:.4f}")
+    
     gc.collect()
 
     return _select_final(
@@ -915,20 +1053,23 @@ class DFAParticle:
     
     def __init__(self, initial_dfa, data: list, labels: np.ndarray, 
                  state: dict, iteration: int, output_dir: str,
-                 beam_size: int, all_history: list, seen_ids: set):
+                 beam_size: int, all_history: list, seen_ids: set,
+                 accuracy_threshold: float = 0.9):
         self.current_dfa = initial_dfa.copy()
         self.best_dfa = initial_dfa.copy()
         self.best_accuracy = _compute_accuracy(initial_dfa, data, labels)
+        self.best_states = len(initial_dfa.states)
         
         self.data = data
         self.labels = labels
         self.state = state
         self.round_idx = iteration  # Round number (for tracking)
-        self.local_iteration = 0    # Local iteration counter (incremented in each step)
+        self.local_iteration = 1    # Start at 1: metrics are pre-initialized by pso_dfa_search
         self.output_dir = output_dir
         self.beam_size = beam_size
         self.all_history = all_history
         self.seen_ids = seen_ids
+        self.accuracy_threshold = accuracy_threshold  # Constraint threshold
     
     def step(self, global_best_dfa: object, n_steps: int = 3) -> None:
         """
@@ -939,6 +1080,12 @@ class DFAParticle:
         global_best_dfa : best DFA found by swarm
         n_steps         : refinement steps to explore
         """
+        # ✅ 防禦檢查：確保 state 字典和 data 完整
+        if 'data' not in self.state or 'labels' not in self.state or 'current_idx' not in self.state:
+            return
+        if not isinstance(self.state['data'], list):
+            return
+        
         for step_idx in range(n_steps):
             try:
                 # Use alternating local_iteration for DELETE/MERGE (even) and DELTA (odd) operations
@@ -962,8 +1109,9 @@ class DFAParticle:
                     candidate_pool.append(global_best_dfa)
                 candidate_pool.append(self.best_dfa)
                 
-                # Rank candidates
-                scored = _rank_candidates(candidate_pool, self.data, self.labels)
+                # Rank candidates using constraint optimization
+                scored = _rank_candidates(candidate_pool, self.data, self.labels, 
+                                         accuracy_threshold=self.accuracy_threshold)
                 
                 # Probabilistic selection with weights (PSO: tendency towards better solutions)
                 top_k = min(5, len(scored))
@@ -979,10 +1127,29 @@ class DFAParticle:
                 # If step fails, keep current position
                 pass
         
-        # Update personal best
+        # Update personal best (using constraint optimization logic)
         current_acc = _compute_accuracy(self.current_dfa, self.data, self.labels)
-        if current_acc > self.best_accuracy:
+        current_states = len(self.current_dfa.states)
+        
+        # Update best if:
+        # 1. Current meets constraint and best doesn't (priority: meet constraint)
+        # 2. Both meet constraint and current has fewer states
+        # 3. Neither meets constraint and current has higher accuracy
+        should_update = False
+        if current_acc >= self.accuracy_threshold:
+            if self.best_accuracy >= self.accuracy_threshold:
+                # Both qualified: fewer states is better
+                should_update = current_states < self.best_states
+            else:
+                # Current qualified, best not: always update
+                should_update = True
+        elif self.best_accuracy < self.accuracy_threshold:
+            # Both unqualified: higher accuracy is better
+            should_update = current_acc > self.best_accuracy
+        
+        if should_update:
             self.best_accuracy = current_acc
+            self.best_states = current_states
             self.best_dfa = self.current_dfa.copy()
             _add_to_history(self.all_history, self.seen_ids, self.best_dfa, current_acc)
 
@@ -1039,10 +1206,13 @@ def pso_dfa_search(sampler_fn: Callable,
     init_acc = _compute_accuracy(initial_dfa, data, labels)
     _add_to_history(all_history, seen_ids, initial_dfa, init_acc)
     
+    # Pre-initialize state metrics (iteration=0) before search begins
+    _AUTO_INSTANCE.propose_automata([initial_dfa], state, 0, [initial_dfa], output_dir, beam_size)
+    
     # Initialize swarm particles
     particles = [
         DFAParticle(initial_dfa, data, labels, state, 0, output_dir,
-                   beam_size, all_history, seen_ids)
+                   beam_size, all_history, seen_ids, accuracy_threshold=accuracy_threshold)
         for _ in range(n_particles)
     ]
     
@@ -1086,6 +1256,10 @@ def pso_dfa_search(sampler_fn: Callable,
                 batch_size=batch_size,
                 max_samples=kwargs.get('max_samples', 5000)
             )
+            # 更新 state 字典
+            state['data'] = list(data)
+            state['labels'] = labels.copy() if isinstance(labels, np.ndarray) else np.array(labels)
+            state['current_idx'] = len(data)
             print(f"  [PSO] Training data size after KL-LUCB: {len(data)} samples")
         
         # Check stopping condition
