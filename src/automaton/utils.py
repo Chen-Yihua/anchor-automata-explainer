@@ -55,7 +55,7 @@ def plot_beam_stats(iteration_stats, beam_size, output_dir="test_result/explain"
     os.makedirs(output_dir, exist_ok=True)
 
     plots_config = [
-        ("Accuracy (Train vs Test)", "Accuracy", ["training_accuracies", "testing_accuracies"], ["-", "--"], ["Training", "Testing"]),
+        ("Accuracy (Train vs Validation)", "Accuracy", ["training_accuracies", "validation_accuracies"], ["-", "--"], ["Training (Best)", "Validation (Best)"]),
         ("States", "States", ["states"], ["-"], ["Min States"])
     ]
 
@@ -64,7 +64,9 @@ def plot_beam_stats(iteration_stats, beam_size, output_dir="test_result/explain"
         
         for key, style, label in zip(data_keys, styles, labels):
             iterations = []
-            values = []
+            values_best = []
+            values_avg = []
+            values_worst = []
             
             for step in iteration_stats:
                 if key not in step:
@@ -84,21 +86,32 @@ def plot_beam_stats(iteration_stats, beam_size, output_dir="test_result/explain"
                 if not all_vals:
                     continue
                 
-                # For accuracy: take max (best performer)
+                # For accuracy: show best, average, and worst performers
                 # For states: take min (simplest automaton)
                 if 'accuracy' in key or 'accuracies' in key:
                     best_val = max(all_vals)
-                else:  # states
+                    avg_val = sum(all_vals) / len(all_vals)
+                    worst_val = min(all_vals)
+                    values_best.append(best_val)
+                    values_avg.append(avg_val)
+                    values_worst.append(worst_val)
+                else:  # states - only show minimum
                     best_val = min(all_vals)
+                    values_best.append(best_val)
                 
                 iterations.append(step['iteration'])
-                values.append(best_val)
             
-            if not values:
+            if not values_best:
                 continue
             
             marker = 'o' if style == '-' else 'x'
-            plt.plot(iterations, values, marker=marker, linestyle=style, label=label, linewidth=2)
+            # Plot best (solid line)
+            plt.plot(iterations, values_best, marker=marker, linestyle=style, label=label, linewidth=2)
+            
+            # For accuracy: also plot average and worst to show diversity
+            if 'accuracy' in key or 'accuracies' in key:
+                plt.plot(iterations, values_avg, marker=marker, linestyle=":", label=label.replace("Best", "Avg"), linewidth=1.5, alpha=0.6)
+                plt.plot(iterations, values_worst, marker=marker, linestyle="-.", label=label.replace("Best", "Worst"), linewidth=1, alpha=0.4)
 
         plt.title(f"{title} over iterations")
         plt.xlabel("Iteration")

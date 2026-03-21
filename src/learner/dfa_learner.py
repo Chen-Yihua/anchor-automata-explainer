@@ -548,29 +548,54 @@ class DFASampler:
         return self.tab_sampler.compare_labels(samples)
     
     def perturbation(self, num_samples: int):
+        """
+        Generate perturbed samples with intelligent deduplication.
+        
+        Uses a set to avoid duplicates and adaptive max_trials based on:
+        - num_samples: target number of unique samples
+        - alphabet size: diversity of possible symbols
+        - sequence length: longer sequences have more perturbation options
+        
+        Parameters
+        ----------
+        num_samples : int
+            Target number of unique samples to generate
+            
+        Returns
+        -------
+        tuple
+            (local_paths, d_samples) - both are lists of unique perturbed sequences
+        """
         symbols = self.alphabet if self.alphabet else list(set(self.instance))
         edit_distance = self.edit_distance
-        max_trials = num_samples * 10
         
-        local_paths = []
+        # Adaptive max_trials based on problem complexity
+        seq_len = len(self.instance) if self.instance else 1
+        alphabet_size = len(symbols) if symbols else 1
+        complexity_factor = seq_len * alphabet_size
+        max_trials = max(num_samples * 20, 1000, complexity_factor * 10)  # At least 20x attempts
         
-        # sampling
-        local_trials = 0 # avoid infinite loop
-        while len(local_paths) < int(num_samples) and local_trials < max_trials:
-            local_trials += 1
-            if local_trials >= max_trials:
-                break
-
+        local_paths_set = set()  # Use set for automatic deduplication
+        no_progress_count = 0  # Track consecutive failures
+        max_no_progress = 100  # If no new samples in 100 tries, give up
+        
+        trials = 0
+        while len(local_paths_set) < int(num_samples) and trials < max_trials:
+            trials += 1
+            
             new_instance = list(self.instance)
             op = random.choice(["replace", "insert", "delete"])
             max_edit = min(edit_distance, len(new_instance))
             edit_dist = random.randint(0, max_edit) if max_edit > 0 else 0
 
             if op == "replace":
-                if len(new_instance) > 0:
-                    replace_indices = random.sample(range(len(new_instance)), edit_dist)
+                if len(new_instance) > 0 and edit_dist > 0:
+                    replace_indices = random.sample(range(len(new_instance)), min(edit_dist, len(new_instance)))
                     for idx in replace_indices:
-                        new_instance[idx] = random.choice([s for s in symbols if not np.array_equal(s, new_instance[idx])])
+                        # Ensure we pick a different symbol
+                        different_symbols = [s for s in symbols if not np.array_equal(s, new_instance[idx])]
+                        if different_symbols:
+                            new_instance[idx] = random.choice(different_symbols)
 
             elif op == "insert":
                 for _ in range(edit_dist):
@@ -578,19 +603,38 @@ class DFASampler:
                     new_instance.insert(insert_idx, random.choice(symbols))
 
             elif op == "delete":
-                if len(new_instance) > 0:
-                    delete_indices = sorted(random.sample(range(len(new_instance)), min(edit_dist, len(new_instance))), reverse=True)
+                if len(new_instance) > 0 and edit_dist > 0:
+                    delete_count = min(edit_dist, len(new_instance))
+                    delete_indices = sorted(random.sample(range(len(new_instance)), delete_count), reverse=True)
                     for idx in delete_indices:
                         del new_instance[idx]
 
+            # Convert to hashable tuple for deduplication
             hashable_instance = tuple(
                 tuple(x) if isinstance(x, np.ndarray) else x
                 for x in new_instance
             )
-            local_paths.append(hashable_instance)
+            
+            # Track progress for early exit
+            prev_size = len(local_paths_set)
+            local_paths_set.add(hashable_instance)
+            
+            if len(local_paths_set) == prev_size:
+                no_progress_count += 1
+            else:
+                no_progress_count = 0
+            
+            # Early exit if no progress for too long
+            if no_progress_count > max_no_progress:
+                print(f"    [Sampling] No new unique samples for {max_no_progress} tries, stopping early. Got {len(local_paths_set)}/{num_samples}")
+                break
 
-        d_samples = local_paths
-        return local_paths, d_samples
+        local_paths = list(local_paths_set)
+        
+        if len(local_paths) < num_samples:
+            print(f"    [Sampling] Generated {len(local_paths)} unique samples (target: {num_samples}) in {trials} tries")
+        
+        return local_paths, local_paths
 
     def __call__(self, num_samples, compute_labels=True):
         raw_data, d_raw_data = self.perturbation(num_samples)
@@ -843,46 +887,98 @@ class DFALearner(BaseAutomataLearner):
         # print("dfa", dfa)
         return dfa
     
-    def perturbation(self, num_samples, max_trials=500):
+    def perturbation(self, num_samples, max_trials=None):
         """
-        Randomly perturb sequences to generate initial passive samples:
-        - replace: replace n symbols
-        - insert: insert n new symbols
+        Randomly perturb sequences to generate initial passive samples.
+        
+        Strategies:
+        - replace: replace n symbols with different ones
+        - append: insert n new symbols at random positions
         - delete: delete n symbols
+        
+        Uses adaptive max_trials based on sequence length and required samples:
+        - If max_trials is None, compute automatically
+        - At least 500 trials or 5x num_samples attempts
+        
+        Parameters
+        ----------
+        num_samples : int
+            Target number of unique samples to generate
+        max_trials : int, optional
+            Maximum number of generation attempts. If None, computed adaptively
+            
+        Returns
+        -------
+        list
+            List of unique perturbed sequences (may be < num_samples if diversity is limited)
         """
-        perturbed = set()
+        if max_trials is None:
+            # Adaptive max_trials based on sequence length and target samples
+            seq_len = len(self.instance) if self.instance else 1
+            max_trials = max(500, num_samples * 5, seq_len * num_samples)
+        
+        perturbed = set()  # Automatic deduplication
         trials = 0
+        no_progress_count = 0
+        max_no_progress = 50  # Stop if no new samples for 50 consecutive tries
 
         while len(perturbed) < num_samples and trials < max_trials:
             new_instance = self.instance.copy()
             op = random.choice(["replace", "append", "delete"])
-            edit_dist = min(self.edit_distance, len(new_instance))  # 確保不超過序列長度
+            edit_dist = min(self.edit_distance, len(new_instance))  # Ensure not exceeding sequence length
 
-            if op == "replace":
-                replace_indices = random.sample(range(len(new_instance)), edit_dist)
-                for idx in replace_indices:
-                    new_instance[idx] = random.choice([s for s in self.symbols[0] if s != new_instance[idx]])
+            if op == "replace" and len(new_instance) > 0 and edit_dist > 0:
+                try:
+                    replace_count = min(edit_dist, len(new_instance))
+                    replace_indices = random.sample(range(len(new_instance)), replace_count)
+                    for idx in replace_indices:
+                        different_symbols = [s for s in self.symbols[0] if s != new_instance[idx]]
+                        if different_symbols:
+                            new_instance[idx] = random.choice(different_symbols)
+                except (ValueError, IndexError):
+                    pass  # Skip if sampling fails
 
-            elif op == "append":
-                replace_indices = random.sample(range(len(new_instance)), edit_dist)
-                for idx in replace_indices:
+            elif op == "append" and edit_dist > 0:
+                for _ in range(edit_dist):
                     insert_idx = random.randint(0, len(new_instance))
                     new_instance.insert(insert_idx, random.choice(self.symbols[0]))
 
-            elif op == "delete":
-                replace_indices = random.sample(range(len(new_instance)), edit_dist)
-                delete_indices = sorted(random.sample(range(len(new_instance)), edit_dist), reverse=True)
-                for idx in delete_indices:
-                    del new_instance[idx]
+            elif op == "delete" and len(new_instance) > 0 and edit_dist > 0:
+                try:
+                    delete_count = min(edit_dist, len(new_instance))
+                    delete_indices = sorted(random.sample(range(len(new_instance)), delete_count), reverse=True)
+                    for idx in delete_indices:
+                        del new_instance[idx]
+                except (ValueError, IndexError):
+                    pass  # Skip if sampling fails
+            
+            # Track progress for early stopping
+            prev_size = len(perturbed)
             perturbed.add(tuple(new_instance))
+            
+            if len(perturbed) == prev_size:
+                no_progress_count += 1
+            else:
+                no_progress_count = 0
+            
             trials += 1
+            
+            # Early exit if no progress
+            if no_progress_count > max_no_progress and len(perturbed) > 0:
+                break
 
         perturbed = list(perturbed)
+        
+        # Report sampling results
         if len(perturbed) < num_samples:
-            extra = random.choices(perturbed, k=num_samples - len(perturbed))
-            perturbed.extend(extra)
+            message = (f"[Perturbation] Generated {len(perturbed)} unique samples "
+                      f"(target: {num_samples}) in {trials} trials. "
+                      f"Diversity may be limited at edit_distance={self.edit_distance}.")
+            print(message)
+        else:
+            print(f"[Perturbation] Generated {len(perturbed)} samples in {trials} trials")
 
-        return list(perturbed)
+        return perturbed
     
     def score_fn(self, dfa, state):
         """
@@ -971,55 +1067,6 @@ class DFALearner(BaseAutomataLearner):
         gc.collect()
         return new_dfas
 
-    # def get_merge_candidates(self, dfa, data, labels, similarity_threshold=0.7):
-    #     """
-    #     Return pairs of states with similar future behavior (forward signature similarity >= threshold).
-    #     """
-    #     import itertools
-
-    #     # Precompute forward signatures
-    #     sigs = {
-    #         s: self.compute_forward_signature(dfa, s)
-    #         for s in dfa.states
-    #     }
-
-    #     candidates = []
-    #     for s1, s2 in itertools.combinations(dfa.states, 2):
-    #         if s1 == dfa.initial_state or s2 == dfa.initial_state:
-    #             continue
-
-    #         sig1, sig2 = sigs[s1], sigs[s2]
-    #         if not sig1 or not sig2:
-    #             continue
-
-    #         sim = len(sig1 & sig2) / len(sig1 | sig2)
-    #         if sim >= similarity_threshold:
-    #             candidates.append((s1, s2))
-
-    #     return candidates
-
-    # def compute_forward_signature(self, dfa, state, max_depth=3, max_samples=30):
-    #     """
-    #     Approximate future behavior of a state by probing short suffixes.
-    #     Returns a frozenset of (word, accept/reject).
-    #     """
-    #     import random
-    #     alphabet = list(_alphabet_of(dfa))
-    #     signature = set()
-
-    #     for _ in range(max_samples):
-    #         length = random.randint(1, max_depth)
-    #         word = tuple(random.choice(alphabet) for _ in range(length))
-
-    #         cur = state
-    #         for sym in word:
-    #             if sym not in cur.transitions:
-    #                 break
-    #             cur = cur.transitions[sym]
-    #         else:
-    #             signature.add((word, cur.is_accepting))
-
-    #     return frozenset(signature)
 
     def check_merge_feasible_rule(self, s1, s2, state_label_dist, critical_states):
         # 1. DFA semantics
@@ -1038,39 +1085,6 @@ class DFALearner(BaseAutomataLearner):
 
         return True
 
-
-    # def is_boundary_state(self, state_id, state_label_dist, purity_threshold=0.9):
-    #     dist = state_label_dist[state_id]
-    #     total = sum(dist.values())
-    #     if total == 0:
-    #         return False
-    #     return max(dist.values()) / total < purity_threshold
-    
-    # def collect_feasible_merge_pairs(self, dfa, state_label_dist, critical_states): 
-    #     """ 預先收集所有 merge feasible 的 state pair 回傳 [(s1, s2), ...] """ 
-    #     pairs = [] 
-    #     states = list(dfa.states) 
-    #     for s1, s2 in itertools.combinations(states, 2): 
-    #         if s1 == s2 or s1 == dfa.initial_state or s2 == dfa.initial_state: 
-    #             continue 
-    #         if self.check_merge_feasible_rule(s1, s2, state_label_dist, critical_states): 
-    #             pairs.append((s1, s2)) 
-    #     return pairs
-    
-    # def is_rare_but_pure_state(self, state_id, state_support, state_label_dist, rarity_threshold=0.05, purity_threshold=0.8): 
-    #     """ 判斷該 state 是否為「極少數但純」的 minority state。
-    #     - support 低於 rarity_threshold 
-    #     - purity 高於 purity_threshold """ 
-    #     total_samples = sum(state_support.values()) 
-    #     support = state_support[state_id] 
-    #     dist = state_label_dist[state_id] 
-    #     if total_samples == 0 or not dist: 
-    #         return False 
-    #     if support / total_samples > rarity_threshold:
-    #         return False 
-    #     if max(dist.values()) / sum(dist.values()) < purity_threshold: 
-    #         return False 
-    #     return True
     
     def collect_merge_pairs_simple(self, dfa, data, labels, max_pairs=20):
         """
@@ -1159,7 +1173,6 @@ class DFALearner(BaseAutomataLearner):
         # heap = []
         new_dfas = []
 
-        # 使用高效的多維度評分來選擇最佳合併候選對
         feasible_pairs = self.collect_merge_pairs_simple(dfa, data, labels, max_pairs=20)
         # feasible_pairs = [(s1, s2) for s1, s2 in itertools.combinations(list(dfa.states) , 2)]
 
@@ -1257,6 +1270,7 @@ class DFALearner(BaseAutomataLearner):
         - The +1 in denominator prevents division by zero
         - CXP results are filtered to keep only shortest explanations (most reliable)
         - Path indices are mapped directly to CXP indices for hit counting
+        - If too many misclassified samples (>50% of data), skip CXP and use simple heuristic
         """
         from dfa_optimization import _cxp_cache
         
@@ -1264,12 +1278,21 @@ class DFALearner(BaseAutomataLearner):
         edge_cxp = defaultdict(int)  # (src_state_id, symbol) -> count of CXP hits on this edge
         cxp_computed = 0
 
+        # Check if too many misclassified samples (sign of broken DFA)
+        # If >50% of data is misclassified, skip CXP to avoid segfaults
+        misclassified_ratio = len(misclassified_paths) / len(data) if len(data) > 0 else 0
+        skip_cxp = misclassified_ratio > 0.5
+        
+        if skip_cxp:
+            print(f"  [SKIP CXP] Too many errors ({len(misclassified_paths)}/{len(data)} = {misclassified_ratio*100:.1f}%) - DFA likely broken, skipping CXP")
+
         # Limit samples for efficiency
         if max_samples and len(misclassified_paths) > max_samples:
             misclassified_paths = random.sample(misclassified_paths, max_samples)
         
-        print("Computing CXP...")
-        # For selected misclassified path, compute path and CXP
+        if not skip_cxp:
+            print("Computing CXP...")
+        # For selected misclassified path, compute path and CXP (or just count edges if CXP skipped)
         for idx, test_word in enumerate(misclassified_paths):
             # Trace path through DFA
             current = dfa.initial_state
@@ -1284,6 +1307,13 @@ class DFALearner(BaseAutomataLearner):
                 current = next_state
             
             if not path:
+                continue
+            
+            # If CXP is disabled, blame all edges equally (simple heuristic)
+            if skip_cxp:
+                for src_state_id, sym, _ in path:
+                    edge_cxp[(src_state_id, sym)] += 1.0
+                cxp_computed += 1
                 continue
             
             # Compute CXP for this word
