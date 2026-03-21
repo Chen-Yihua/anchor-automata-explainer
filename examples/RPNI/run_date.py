@@ -87,10 +87,9 @@ with open(txt_path, "w", encoding="utf-8") as log_file:
     delta = 0.1
     tau = 0.1
     batch_size = 2000
-    coverage_samples = 1000
     beam_size = 1
     max_anchor_size = None
-    init_num_samples = 2000
+    init_num_samples = 3500
     edit_distance = 10
 
     print("\n============ Training DFA Explanation (MM-DD-YYYY) ============")
@@ -107,8 +106,6 @@ with open(txt_path, "w", encoding="utf-8") as log_file:
         delta=delta,
         tau=tau,
         beam_size=beam_size,
-        # max_anchor_size=max_anchor_size,
-        # coverage_samples=coverage_samples,
         batch_size=batch_size,
         init_num_samples=init_num_samples,
         output_dir=output_dir,
