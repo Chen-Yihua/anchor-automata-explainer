@@ -41,7 +41,7 @@ LANGUAGES = {
     # "L2AB (Pattern (abcdabcd)*)": L2AB,
     # "L3 (Parity of counts)": L3,
     # "L3A (Pattern (aaa)*)": L3A,
-    "L3AB (Pattern (abcdabcdabcd)*)": L3AB, # 30 states: ['a', 'b', 'c', 'd'] * 6 -
+    # "L3AB (Pattern (abcdabcdabcd)*)": L3AB, # 30 states: ['a', 'b', 'c', 'd'] * 6 -
     "L4 (No three consecutive same)": L4,
     # "L4A (Pattern (aaaa)*)": L4A,
     # "L4AB (Pattern (abcdabcdabcdabcd)*)": L4AB,
@@ -50,7 +50,7 @@ LANGUAGES = {
     # "L5AB (Pattern (abcdabcdabcdabcdabcd)*)": L5AB,
     "L6 (|#a - #b| mod 3 == 0)": L6,
     # "L6A (Pattern (aaaaaa)*)": L6A,
-    "L7 (Pattern a*b*a*b*)": L7,
+    # "L7 (Pattern a*b*a*b*)": L7,
     # "L7A (Pattern (aaaaaaa)*)": L7A,
     # "L8A (Pattern (aaaaaaaa)*)": L8A,
     # "L9A (Pattern (aaaaaaaaa)*)": L9A,

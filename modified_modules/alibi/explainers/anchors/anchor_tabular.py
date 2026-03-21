@@ -841,6 +841,8 @@ class AnchorTabular(Explainer, FitMixin):
                 verbose: bool = False,
                 verbose_every: int = 1,
                 output_dir: str = "test_result/explain",
+                use_kllucb: bool = True,
+                prebuilt_init = None,
                 **kwargs: Any) -> Explanation:
         """
         Explain prediction made by classifier on instance `X`.
@@ -965,6 +967,8 @@ class AnchorTabular(Explainer, FitMixin):
             verbose=verbose,
             verbose_every=verbose_every,
             output_dir=output_dir,
+            use_kllucb=use_kllucb,
+            prebuilt_init=prebuilt_init,
             **kwargs
         )
         self.mab = mab
@@ -993,23 +997,34 @@ class AnchorTabular(Explainer, FitMixin):
         """
         result['instance'] = ord_to_ohe(np.atleast_2d(X), self.cat_vars_ord)[0].reshape(-1) if self.ohe else X
         result['instances'] = ord_to_ohe(np.atleast_2d(X), self.cat_vars_ord)[0] if self.ohe else np.atleast_2d(X)
-        result['examples'] = [
-            {k: ord_to_ohe(np.atleast_2d(v), self.cat_vars_ord)[0] for k, v in example.items() if v.size}
-            for example in result['examples']
-        ] if self.ohe else result['examples']
+        
         exp = AnchorExplanation('tabular', result)
+        initial_automata = exp.exp_map['automata'][0]
+        initial_state = exp.exp_map['states'][0]
+        initial_training_accuracy = exp.exp_map['training_accuracies'][0]
+        initial_validation_accuracy = exp.exp_map['validation_accuracies'][0]
+        final_automata = exp.exp_map['automata'][-1]
+        final_state = exp.exp_map['states'][-1]
+        final_training_accuracy = exp.exp_map['training_accuracies'][-1]
+        final_validation_accuracy = exp.exp_map['validation_accuracies'][-1]
+        success = exp.exp_map['success']
+        budget_used = exp.exp_map['budget_used']
+        init_automaton_time = exp.exp_map.get('init_automaton_time', 0.0)
 
         # output explanation dictionary
         data = copy.deepcopy(DEFAULT_DATA_ANCHOR)
         data.update(
-            automata=exp.exp_map['automata'],
-            training_accuracy=exp.exp_map['training_accuracy'],
-            testing_accuracy=exp.exp_map['testing_accuracy'],
-            coverage=exp.coverage(),
-            state=exp.exp_map['size'],
-            raw=exp.exp_map,
-            # false_accept=exp.exp_map['false_accept'],
-            # true_reject=exp.exp_map['true_reject'],
+            initial_automata=initial_automata,
+            initial_state=initial_state,
+            initial_training_accuracy=initial_training_accuracy,
+            initial_validation_accuracy=initial_validation_accuracy,
+            final_automata=final_automata,
+            final_state=final_state,
+            final_training_accuracy=final_training_accuracy,
+            final_validation_accuracy=final_validation_accuracy,
+            success=success,
+            budget_used=budget_used,  # DFA evaluation count for fair comparison
+            init_automaton_time=init_automaton_time,
         )
 
         # create explanation object

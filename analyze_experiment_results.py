@@ -4,11 +4,9 @@ Analysis of Experiment Results: Calculate accuracy improvements and state reduct
 """
 
 import os
-import csv
 import pandas as pd
 import numpy as np
-from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict
 
 PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
 RESULT_DIRS = [

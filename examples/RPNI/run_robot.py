@@ -1,5 +1,6 @@
 
 import sys, os
+import time
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 SRC_PATH = os.path.join(PROJECT_ROOT, 'src')
 EXTERNAL_MODULES = os.path.join(PROJECT_ROOT, 'external_modules')
@@ -74,51 +75,54 @@ explainer.fit(
 explainer.samplers[0].d_train_data = data
 
 # explain sentence
-test_instance = ['blue', 'blue', 'blue', 'yellow']
+output_dir = f"test_result/Robot"
+test_instance = ['blue', 'yellow', 'blue', 'yellow', 'green', 'yellow', 'green']
 # explainer parameters
 learn_type = 'Tabular'
-coverage_samples = 5000
-batch_size = 1000
-n_covered_ex = 1000
-min_samples_start = 1000
+init_num_samples = 2000   # 增加到2000以獲得更大的初始DFA
+batch_size = 500          # 增加到500
 accuracy_threshold = 0.95
 state_threshold = 5
 tau = 0.01
 delta = 0.01
-# epsilon_stop = 0.01
-edit_distance = 3
+edit_distance = 6
 beam_size = 1
+select_by = 'accuracy'
 
-with open("TestRobot1.txt", "w", encoding="utf-8") as log_file:
+with open(output_dir, "w", encoding="utf-8") as log_file:
     sys.stdout = Tee(sys.stdout, log_file) 
-    print("\nInstance: %s" % test_instance)
-    print("Prediction: %s" % robot_predict_fn([test_instance]))
-    print("\n============Training step============")
-
+    print("\n============ Training DFA Explanation ============")
+    start_time = time.time()
     explanation = explainer.explain(
-        learn_type,
+        type='Tabular',
         automaton_type=automaton_type,
         alphabet=alphabet,
         X=test_instance,
         edit_distance=edit_distance,
-        coverage_samples=coverage_samples,
-        batch_size=batch_size,
-        n_covered_ex=n_covered_ex,
-        min_samples_start=min_samples_start,
         accuracy_threshold=accuracy_threshold,
         state_threshold=state_threshold,
-        tau=tau,
+        select_by=select_by,
         delta=delta,
+        tau=tau,
         beam_size=beam_size,
+        batch_size=batch_size,
+        init_num_samples=init_num_samples,
+        output_dir=output_dir,
         verbose=True,
     )
+    learning_time = time.time() - start_time
+    automaton = explanation.data['automata']
 
-    # Anchor result
-    print('\n==============Result==============')
-    print('Automata:', explanation.automata)
-    print('Training Accuracy:', explanation.training_accuracy)
-    print('Testing Accuracy:', explanation.testing_accuracy)
-    print('State:', explanation.state)
+    print('\n============== Result ==============')
+    # print(f"Training Accuracy of model: {tra:.4f}")
+    # print(f"Testing Accuracy of model: {test_acc:.4f}")
+    print(f"Explaining Instance: {test_instance}")
+    # print(f"Prediction of Instance: {predict_fn([test_instance])}")
+
+    print('\nFinal DFA:', automaton)
+    print('Number of States:', explanation.data['state'])
+    print('Training Accuracy of DFA:', explanation.data['training_accuracy'])
+    print('Testing Accuracy of DFA:', explanation.data['testing_accuracy'])
     
     mab = explainer.mab # learning record
 
