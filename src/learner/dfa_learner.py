@@ -604,7 +604,7 @@ class DFASampler:
                     replace_indices = random.sample(range(len(new_instance)), min(edit_dist, len(new_instance)))
                     for idx in replace_indices:
                         # Ensure we pick a different symbol
-                        different_symbols = [s for s in symbols if not np.array_equal(s, new_instance[idx])]
+                        different_symbols = [s for s in self.symbols[0] if s != new_instance[idx]]
                         if different_symbols:
                             new_instance[idx] = random.choice(different_symbols)
 
@@ -1246,7 +1246,7 @@ class DFALearner(BaseAutomataLearner):
 
         gc.collect()
 
-        print(f"Generated {len(new_dfas)-1} new DFAs from MERGE modifications.")
+        print(f"Generated {len(new_dfas)} new DFAs from MERGE modifications.")
         print("-" * 30)
         return new_dfas
 
@@ -1535,7 +1535,7 @@ class DFALearner(BaseAutomataLearner):
                     del new_dfa
                     gc.collect()
 
-        print(f"Generated {len(new_dfas)-1} new DFAs from DELTA modifications.")
+        print(f"Generated {len(new_dfas)} new DFAs from DELTA modifications.")
         print("-" * 30)
         return new_dfas
 
