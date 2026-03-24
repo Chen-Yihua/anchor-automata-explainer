@@ -122,7 +122,7 @@ def get_languages_config(accuracy_threshold):
             tau             = 0.05,
             batch_size      = 500,
             beam_size       = 1,
-            init_num_samples= 2000,
+            init_num_samples= 1000,
             edit_distance   = 5,
             select_by       = 'accuracy',
             max_length      = 10, embedding_dim = 16, hidden_dim = 32,
@@ -138,7 +138,7 @@ def get_languages_config(accuracy_threshold):
             batch_size      = 2000,
             beam_size       = 1,
             init_num_samples= 1000,
-            edit_distance   = 10,
+            edit_distance   = 8,
             select_by       = 'accuracy',
             max_length      = 20, embedding_dim = 64, hidden_dim = 256,
             num_layers      = 2,  dropout = 0.3,
@@ -311,29 +311,10 @@ def build_shared_init_from_beam(explainer, output_dir: str = None) -> Optional[S
     OR None if extraction failed
     """
     mab = getattr(explainer, 'mab', None)
-    if mab is None:
-        print("  [ERROR] Beam search mab not available.")
-        return None
-
-    # Extract initial DFA (best automaton from beam search)
     automatas = getattr(mab, 'automatas', None) or []
-    if not automatas:
-        print("  [ERROR] Beam search produced no automata.")
-        return None
-    
-    initial_dfa = automatas[0]
-    if hasattr(initial_dfa, 'copy'):
-        initial_dfa = initial_dfa.copy()
-    else:
-        initial_dfa = copy.deepcopy(initial_dfa)
-
-    # Extract validation data and labels (these are validation samples from beam)
+    initial_dfa = automatas[0].copy()
     validation_data = list(getattr(mab, 'validation_data'))
     validation_labels = np.asarray(getattr(mab, 'validation_labels'))
-    
-    if len(validation_data) == 0:
-        print("  [ERROR] Beam search validation_data missing.")
-        return None
 
     # Get learner instance from mab
     from learner.dfa_learner import DFALearner
@@ -429,8 +410,8 @@ def run_one_language(lang_code: str, cfg: dict, output_root: str) -> dict | None
     sampler_fn = explainer.samplers[0]
 
     # ══════════════════════════════════════════════════════════════════
-    # Method 1 – Beam Search  (anchor_beam via explain())
-    # Check for cached shared_init and beam_results first; if not found, run beam search
+    # Generate Initial DFA (Pre-computation, not counted in beam_time)
+    # Retry if state count is outside [30, 40] range
     # ══════════════════════════════════════════════════════════════════
     print("\n  ─── Beam Search (First - to create/load shared_init) ─────────────────────────")
 
@@ -505,6 +486,7 @@ def run_one_language(lang_code: str, cfg: dict, output_root: str) -> dict | None
             'success': beam_success,
             'budget_used': budget_used,
         }
+        print(f"  [BEAM] final_state: {final_state}")
         save_beam_results_to_disk(beam_results_dict, out_dir)
 
     if shared is None:
@@ -512,7 +494,7 @@ def run_one_language(lang_code: str, cfg: dict, output_root: str) -> dict | None
         return None
     
     # Use beam search's actual budget for SA/GA/PSO (fair comparison)
-    print(f"  [Budget] Setting SA/GA/PSO max_evaluations={budget_used} beam search)")
+    print(f"  [Budget] Setting SA/GA/PSO max_evaluations={budget_used} beam search")
     
     results: dict = {
         "lang"              : lang_code,
@@ -792,33 +774,32 @@ if __name__ == "__main__":
     )
     os.makedirs(OUTPUT_ROOT, exist_ok=True)
 
-    log_path = os.path.join(OUTPUT_ROOT, "experiment_log_rerun.txt")
+    log_path = os.path.join(OUTPUT_ROOT, "experiment_log.txt")
 
     print(f"\n{'='*70}")
     print(f"  Running experiment with accuracy_threshold={accuracy_threshold}")
     print(f"  Output directory: {OUTPUT_ROOT}")
     print(f"{'='*70}\n")
 
-    with open(log_path, "w", encoding="utf-8") as log_f:
-        _orig_stdout = sys.stdout
-        sys.stdout   = Tee(sys.stdout, log_f)
+    _orig_stdout = sys.stdout
+    sys.stdout = Tee(log_path)
 
-        try:
-            all_results: dict = {}
-            for lang_code, cfg in LANGUAGES.items():
-                try:
-                    all_results[lang_code] = run_one_language(
-                        lang_code, cfg, OUTPUT_ROOT)
-                except Exception as exc:
-                    print(f"\n[ERROR] {lang_code}: {exc}")
-                    print(f"[TRACEBACK]")
-                    traceback.print_exc()
-                    all_results[lang_code] = None
+    try:
+        all_results: dict = {}
+        for lang_code, cfg in LANGUAGES.items():
+            try:
+                all_results[lang_code] = run_one_language(
+                    lang_code, cfg, OUTPUT_ROOT)
+            except Exception as exc:
+                print(f"\n[ERROR] {lang_code}: {exc}")
+                print(f"[TRACEBACK]")
+                traceback.print_exc()
+                all_results[lang_code] = None
 
-            print_summary(all_results, accuracy_threshold)
-            save_csv(all_results, os.path.join(OUTPUT_ROOT, "results_rerun.csv"))
+        print_summary(all_results, accuracy_threshold)
+        save_csv(all_results, os.path.join(OUTPUT_ROOT, "results.csv"))
 
-        finally:
-            sys.stdout = _orig_stdout
+    finally:
+        sys.stdout = _orig_stdout
 
     print(f"\nFull log → {log_path}")

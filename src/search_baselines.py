@@ -28,6 +28,7 @@ from simanneal import Annealer
 from pyswarms.single.global_best import GlobalBestPSO
 
 from automaton.utils import plot_beam_stats
+from learner.pso_optimizer import PSOAutomataOptimizer
 
 # -----------------------------------------------------------------------
 # Module-level reference to the learner instance (mirrors anchor_base.py)
@@ -363,7 +364,16 @@ class DFAAnnealer(Annealer):
         - Accepts if new_energy < current_energy
         - Accepts with prob exp(-dE/T) otherwise
         - Reverts if rejected
+        
+        Stops immediately when evaluations_count >= max_evaluations.
         """
+        # Stop if budget exhausted (check FIRST before anything else)
+        if self.evaluations_count >= self.max_evaluations:
+            # Signal early termination by returning - simanneal will exit gracefully
+            print(f"[SA] Budget exhausted: {self.evaluations_count} >= {self.max_evaluations}")
+            self.user_exit = True
+            return
+        
         self.iteration_count += 1
         
         # First-time initialization (iteration == 0 logic)
@@ -375,9 +385,6 @@ class DFAAnnealer(Annealer):
             self._initialized = True
             return  # Return None on first initialization (simanneal handles it)
         
-        if self.evaluations_count >= self.max_evaluations:
-            return  # Stop moving when budget exhausted
-        
         # Generate a SINGLE neighbor candidate (standard SA: one neighbor move)
         candidates = _get_candidates(
             self.current_dfa, self.propose_state, self.iteration_count,
@@ -388,29 +395,39 @@ class DFAAnnealer(Annealer):
         if candidates:
             # Randomly select from candidates (or just use the single one)
             candidate = random.choice(candidates) if len(candidates) > 1 else candidates[0]
-            
-            # Try to accept this candidate (simanneal's Metropolis will make final decision)
+
+            # Compute candidate accuracy (for logging/history)
             candidate_acc = _compute_accuracy(candidate, self.training_data, self.training_labels)
-            
+
             # Track in history
             _add_to_history(
                 self.all_history, self.seen_ids,
                 candidate, candidate_acc,
                 _compute_accuracy(candidate, self.validation_data, self.validation_labels)
             )
-            
-            # Update current DFA (simanneal decides accept/reject after energy() call)
+
+            # Update Annealer state to the candidate so simanneal can evaluate energy() and revert if needed
+            # simanneal uses self.state for its internal bookkeeping so we must assign there.
+            try:
+                self.state = candidate
+            except Exception:
+                # Fallback: keep a separate reference but energy() will rely on self.state
+                self.state = candidate
+
+            # Also keep current_dfa reference in this wrapper for debugging/printing convenience
             self.current_dfa = candidate
-            
-            # Update best (track best seen)
+
+            # Update best (track best seen so far)
             current_best_acc = _compute_accuracy(self.best_dfa, self.training_data, self.training_labels)
             if candidate_acc > current_best_acc:
-                self.best_dfa = self.current_dfa
+                self.best_dfa = copy.deepcopy(candidate)
                 print(f"  [SA-iter{self.iteration_count}] NEW best: acc={candidate_acc:.4f}, states={len(candidate.states)}, evals: {self.evaluations_count}/{self.max_evaluations}")
     
     def energy(self):
         """Return negative accuracy (we minimize energy)."""
-        acc = _compute_accuracy(self.current_dfa, self.training_data, self.training_labels)
+        # Use simanneal's canonical state (`self.state`) for energy calculation so revert works correctly
+        dfa_to_eval = getattr(self, 'state', None) or self.current_dfa
+        acc = _compute_accuracy(dfa_to_eval, self.training_data, self.training_labels)
         return -acc  # Negative because Annealer minimizes energy
 
 
@@ -520,16 +537,16 @@ def ga_dfa_search(sampler_fn: Callable,
                   max_evaluations: int = 500,
                   **kwargs) -> dict:
     """
-    Original Genetic Algorithm for DFA search (no crossover, mutation-only).
+    Standard Genetic Algorithm for DFA search (no crossover, mutation-only).
     
     Since DFA crossover is not well-defined, uses only selection + mutation.
     
     Algorithm:
     1. Initialize population with initial_dfa
     2. While budget allows:
-       a) Fill population via tournament selection to population_size
-       b) Always mutate via propose_automata (100% mutation rate)
-       c) Evaluate and add to population
+       a) Generate population_size new offspring via tournament selection + mutation
+       b) Evaluate all offspring
+       c) Replace entire population with new offspring (generational replacement)
     3. Return best individual from all history
     
     Requires SharedInit from beam search containing initial DFA and validation data.
@@ -596,42 +613,29 @@ def ga_dfa_search(sampler_fn: Callable,
     # Data collection for visualization
     generation_stats = []
     gen = 0
-    prev_evals = 0  # Track progress - to detect stalled loops
-    no_progress_count = 0  # Consecutive generations with no new evaluations
     
-    # Evolution loop: controlled by evaluations_count AND progress detection
+    # Evolution loop: Standard GA - generate entire new generation each iteration
     while evaluations_count < max_evaluations:
         gen += 1
         print(f"\n[GA-Gen] Generation {gen}, evals: {evaluations_count}/{max_evaluations}")
         
-        #  If no new evaluations since last generation, stop
-        if evaluations_count == prev_evals:
-            no_progress_count += 1
-            print(f"    [GA STALL] No progress for {no_progress_count} consecutive generations")
-            if no_progress_count >= 3:
-                print(f"[GA] Stopping: {no_progress_count} generations with no progress (population likely converged)")
-                break
-        else:
-            no_progress_count = 0
-        prev_evals = evaluations_count
+        # Generate new offspring for this generation
+        offspring = []
         
-        # Fill population via tournament selection
-        while len(population) < population_size:
+        # Create population_size new individuals via mutation
+        for individual_idx in range(population_size):
             # Break if budget exhausted
             if evaluations_count >= max_evaluations:
-                print(f"    [GA Budget exhausted] Stopping population fill at {len(population)}/{population_size}")
+                print(f"    [GA Budget exhausted] Generated {individual_idx}/{population_size} offspring")
                 break
             
-            # Select parent via tournament selection
-            if len(population) > 0:
-                parent = toolbox.select(population, 1)[0]
-            else:
-                parent = _create_individual(initial_dfa)
-            
-            # Always mutate (no random copy of parent)
             try:
+                # Select parent via tournament selection
+                parent = toolbox.select(population, tournament_size)[0]
                 dfa = parent[0]
-                iteration = gen * population_size
+                
+                # Mutate parent to generate candidates
+                iteration = gen * population_size + individual_idx
                 candidates = _get_candidates(dfa, state, iteration, output_dir, beam_size)
                 evaluations_count += len(candidates)
                 
@@ -641,25 +645,31 @@ def ga_dfa_search(sampler_fn: Callable,
                                              validation_data, validation_labels)
                     child = _create_individual(scored[0]['dfa'])
                     child.fitness.values = toolbox.evaluate(child)
-                    population.append(child)
+                    offspring.append(child)
                 else:
                     # No candidates, copy parent as fallback
                     child = _create_individual(parent[0])
                     child.fitness.values = toolbox.evaluate(child)
-                    population.append(child)
+                    offspring.append(child)
+                    
             except Exception as exc:
-                print(f"    [Warning] Mutation failed: {exc}")
-                child = _create_individual(parent[0])
-                child.fitness.values = toolbox.evaluate(child)
-                population.append(child)
+                print(f"    [Warning] Generating offspring {individual_idx} failed: {exc}")
+                # Fallback: copy best individual from current population
+                if len(population) > 0:
+                    best_ind = max(population, key=lambda x: x.fitness.values[0])
+                    child = _create_individual(best_ind[0])
+                    child.fitness.values = best_ind.fitness.values
+                    offspring.append(child)
+                else:
+                    # Last resort: use initial DFA
+                    child = _create_individual(initial_dfa)
+                    child.fitness.values = toolbox.evaluate(child)
+                    offspring.append(child)
         
-        # Budget check before keeping population
-        if evaluations_count >= max_evaluations:
-            print(f"[GA] Budget exhausted. Stopping after generation {gen}")
-            break
+        # Replace population with new offspring (standard GA replacement strategy)
+        population[:] = offspring
         
-        # Keep population at fixed size
-        population = population[:population_size]
+        print(f"    [GA-Gen] Generated {len(offspring)} offspring, total population size: {len(population)}")
         
         # Log statistics
         fitnesses = [ind.fitness.values[0] for ind in population]
@@ -708,10 +718,10 @@ def pso_dfa_search(sampler_fn: Callable,
                    max_evaluations: int = 500,
                    **kwargs) -> dict:
     """
-    Original Particle Swarm Optimisation for DFA search using pyswarms.GlobalBestPSO.
+    Particle Swarm Optimisation for DFA search using PSOAutomataOptimizer.
     
-    Simple and pure PSO: particles search the DFA space via propose_automata calls.
-    Budget controlled by max_evaluations: iters × n_particles ≈ max_evaluations.
+    Uses the PSOAutomataOptimizer from pso_optimizer.py for state minimization
+    while maintaining accuracy above a threshold.
     
     Requires SharedInit from beam search containing initial DFA and validation data.
     
@@ -719,15 +729,15 @@ def pso_dfa_search(sampler_fn: Callable,
     ----------
     shared_init       : SharedInit – from beam search (required)
     n_particles       : int – number of particles in swarm
-    beam_size         : int – beam_size for candidate generation (fixed)
-    max_evaluations   : int – max candidates generated (budget limit, controls iters)
+    beam_size         : int – beam_size for candidate generation (not used, kept for compatibility)
+    max_evaluations   : int – controls max iterations
     
     Returns
     -------
     dict with same keys as anchor_beam()
     """
     print("=" * 70)
-    print("[PSO-Original] Initialising Particle Swarm Optimisation (original pure PSO)…")
+    print("[PSO] Initialising Particle Swarm Optimisation (PSOAutomataOptimizer)…")
     
     if shared_init is None:
         raise ValueError("[PSO] FATAL: shared_init is required (from beam search)")
@@ -738,128 +748,84 @@ def pso_dfa_search(sampler_fn: Callable,
 
     all_history: List[dict] = []
     seen_ids: set = set()
-    evaluations_count = [0]  # Use list for mutable reference
     
     # Add initial DFA to history
     initial_train_acc = _compute_accuracy(initial_dfa, training_data, training_labels)
     initial_val_acc = _compute_accuracy(initial_dfa, validation_data, validation_labels)
     _add_to_history(all_history, seen_ids, initial_dfa, initial_train_acc, initial_val_acc)
+        
+    # Calculate iterations based on max_evaluations and n_particles
+    # Each PSO iteration evaluates n_particles candidates, so:
+    # n_iterations ≈ max_evaluations / n_particles
+    # Clamp between [5, 100] to ensure reasonable bounds
+    n_iterations = max(5, min(100, max_evaluations // max(n_particles, 1)))
     
-    best_dfa = initial_dfa
-    best_accuracy = initial_train_acc
-    iteration_count = [0]
+    print(f"[PSO] Configuration:")
+    print(f"  Particles: {n_particles}")
+    print(f"  Iterations: {n_iterations}")
+    print(f"  Threshold: {accuracy_threshold:.2f}")
+    print(f"  Training samples: {len(training_data)}")
+    print(f"  Initial states: {initial_states}")
     
-    def objective_function(position_array):
-        """
-        Objective function for PSO (GlobalBestPSO) with Operation Strength. Used for computing fitness of particles in each iteration.
+    # Create PSOAutomataOptimizer
+    try:
+        optimizer = PSOAutomataOptimizer(
+            initial_dfa=initial_dfa,
+            threshold=accuracy_threshold,
+            data=training_data,
+            labels=training_labels,            validation_data=validation_data,
+            validation_labels=validation_labels,            learner=shared_init.learner,
+            n_particles=n_particles,
+            n_iterations=n_iterations,
+            w=0.7,
+            c1=1.5,
+            c2=1.5,
+            verbose=True,
+            max_evaluations=max_evaluations,
+            slot_beam_size=max(1, beam_size)
+        )
+    except Exception as e:
+        print(f"[PSO ERROR] Failed to initialize PSOAutomataOptimizer: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fallback: return initial DFA
+        result = _select_final(
+            all_history, select_by, accuracy_threshold, state_threshold,
+            "DFA", initial_dfa, initial_states, output_dir,
+        )
+        result['initial_states'] = initial_states
+        return result
+    
+    # Run PSO optimization
+    print(f"\n[PSO] Starting optimization...")
+    try:
+        pso_result = optimizer.optimize(n_particles=n_particles, n_iterations=n_iterations, save_trajectory=True)
         
-        Simple original PSO: each iteration evaluates all n_particles.
-        Budget control: stop generating new candidates when evaluations_count >= max_evaluations.
+        print(f"\n[PSO] Optimization completed successfully")
+        print(f"  Best states: {pso_result['best_states']}")
+        print(f"  Best accuracy: {pso_result['best_accuracy']:.4f}")
+        print(f"  Best validation accuracy: {pso_result['best_validation_accuracy']:.4f}")
+        print(f"  Best loss: {pso_result['best_loss']:.4f}")
         
-        position_array: shape (n_particles, dimensions)
-            pos[0] ∈ [0, 1] → operation strength (0=conservative: generate fewer candidates, 1=aggressive: generate more candidates)
-        
-        Returns: shape (n_particles,) with fitness for each particle
-        """
-        nonlocal best_dfa, best_accuracy
-        
-        # Handle single particle case
-        if position_array.ndim == 1:
-            position_array = position_array.reshape(1, -1)
-        
-        fitness_values = np.zeros(len(position_array))
-        
-        for particle_idx, pos in enumerate(position_array):
-            if evaluations_count[0] >= max_evaluations:
-                fitness_values[particle_idx] = best_accuracy
-                continue
-            
-            try:
-                # Scheme 1: Operation Strength [0, 1] → beam_size [1, 10]
-                strength = np.clip(pos[0], 0, 1)
-                search_beam_size = max(1, int(1 + strength * 9))  # Maps [0,1] to [1,10]
-                iteration = iteration_count[0] * n_particles + particle_idx
-                
-                candidates = _get_candidates(best_dfa, state, iteration, output_dir, beam_size=search_beam_size)
-                
-                if not candidates:
-                    fitness_values[particle_idx] = best_accuracy
+        # Collect all candidates from PSO history into all_history (use _add_to_history for consistency)
+        if 'all_history' in pso_result:
+            for candidate in pso_result['all_history']:
+                try:
+                    _add_to_history(all_history, seen_ids, candidate['automata'],
+                                    candidate.get('training_accuracy', 0.0),
+                                    candidate.get('validation_accuracy', 0.0))
+                except Exception:
                     continue
-                
-                evaluations_count[0] += len(candidates)
-                
-                # Rank and select best candidate
-                scored = _rank_candidates(
-                    candidates, training_data, training_labels,
-                    validation_data, validation_labels
-                )
-                
-                top_candidate = scored[0]
-                acc = top_candidate['training_accuracy']
-                
-                # Track in history
-                _add_to_history(all_history, seen_ids, top_candidate['dfa'], acc, 
-                               top_candidate['validation_accuracy'])
-                
-                # Update best
-                best_accuracy = acc
-                best_dfa = top_candidate['dfa']
-                print(f"  [PSO-iter{iteration_count[0]}-p{particle_idx}] "
-                      f"NEW best: acc={acc:.4f}, states={top_candidate['states']}, "
-                      f"evals: {evaluations_count[0]}/{max_evaluations}")
-                
-                fitness_values[particle_idx] = acc
-                
-            except Exception as exc:
-                print(f"[ERROR] PSO particle {particle_idx}: {exc}")
-                import traceback
-                traceback.print_exc()
-                fitness_values[particle_idx] = best_accuracy
+        # Optionally report how many evaluations PSO performed
+        if 'evaluations' in pso_result:
+            print(f"  [PSO] Evaluations used: {pso_result['evaluations']} / {pso_result.get('max_evaluations')}")
         
-        iteration_count[0] += 1
-        return fitness_values
+    except Exception as e:
+        print(f"[PSO WARNING] Optimization failed: {e}")
+        import traceback
+        traceback.print_exc()
     
-    # Create and configure PSO
-    print(f"[PSO] Running PSO with {n_particles} particles, baseline beam_size={beam_size}")
-    
-    # iters × n_particles ≈ max_evaluations
-    iters = max(10, (max_evaluations + n_particles - 1) // n_particles)
-    print(f"[PSO] Iters={iters} (each iteration evaluates {n_particles} particles, "
-          f"total ~{iters * n_particles} evaluations)")
-    
-    # PSO options
-    options = {
-        'c1': 0.5,      # Cognitive parameter
-        'c2': 1.5,      # Social parameter
-        'w': 0.9,       # Inertia weight
-        'k': n_particles,
-        'p': 2          # Minkowski norm dimension
-    }
-    
-    # Initialize PSO optimizer
-    # dimensions=1: particle position is operation strength [0, 1]
-    optimizer = GlobalBestPSO(
-        n_particles=n_particles,
-        dimensions=1,
-        options=options,
-        bounds=(np.array([0.0]), np.array([1.0])),
-        velocity_clamp=(-1, 1)
-    )
-    
-    # Run optimization (returns best_cost, best_position)
-    best_cost, _ = optimizer.optimize(
-        objective_function,
-        iters=iters,
-        verbose=False
-    )
-    
-    print(f"[PSO] PSO optimization completed")
-    print(f"[PSO] Best cost (accuracy): {best_cost:.4f}")
-    
-    print(f"\n[PSO] Completed {evaluations_count[0]} evaluations in {iteration_count[0]} iterations")
-    print(f"[PSO] Best accuracy: {best_accuracy:.4f}")
-    
-    # Note: PSO doesn't collect per-iteration stats in the same way, so skip plot generation
+    print(f"\n[PSO] Total candidates collected: {len(all_history)}")
     
     gc.collect()
 
