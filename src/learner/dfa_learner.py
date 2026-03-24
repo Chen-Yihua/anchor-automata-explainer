@@ -20,7 +20,18 @@ from matplotlib import pyplot as plt
 import numpy as np
 from aalpy.automata.Dfa import Dfa, DfaState
 
-from scar_rpni_size_capped_demo import learn_dfa_size_capped
+# Add parent directory to path for scar_rpni import
+_parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../'))
+if _parent_path not in sys.path:
+    sys.path.insert(0, _parent_path)
+
+try:
+    from scar_rpni_size_capped_demo import learn_dfa_size_capped
+except ImportError:
+    # Fallback: Define dummy function if module not available
+    def learn_dfa_size_capped(*args, **kwargs):
+        raise ImportError("scar_rpni_size_capped_demo module not found")
+    learn_dfa_size_capped = None
 
 
 # Add external_modules path for language module
@@ -832,6 +843,12 @@ class DFALearner(BaseAutomataLearner):
 
     def create_automata_sized(self, positive_samples, negative_samples, alphabet):
         """Create DFA with size-capped learning"""
+        if learn_dfa_size_capped is None:
+            raise ImportError(
+                "scar_rpni_size_capped_demo module not found. "
+                "Please ensure src/scar_rpni_size_capped_demo.py exists in the project."
+            )
+        
         print(f'\nPassive learning sample count: {len(positive_samples + negative_samples)}\n')
 
         results = []
@@ -1021,7 +1038,6 @@ class DFALearner(BaseAutomataLearner):
             if s == dfa.initial_state or (s.is_accepting and sum(x.is_accepting for x in dfa.states) <= 1):
                 continue
             
-            # new_dfa = self.clone_automaton(dfa)
             new_dfa = dfa.copy()
             target_state = next(x for x in new_dfa.states if x.state_id == s.state_id)
             
@@ -1065,6 +1081,9 @@ class DFALearner(BaseAutomataLearner):
 
         del s
         gc.collect()
+
+        print(f"Generated {len(new_dfas)-1} new DFAs from DELETE modifications.")
+        print("-" * 30)
         return new_dfas
 
 
@@ -1088,11 +1107,13 @@ class DFALearner(BaseAutomataLearner):
     
     def collect_merge_pairs_simple(self, dfa, data, labels, max_pairs=20):
         """
-        優先合併 label 分布一致的狀態
+        Compute the label distribution for each state based on the training data.
+        Then score pairs of states based on how similar their label distributions are, prioritizing pairs with the same main label.
+        main label: the label with the highest count in the distribution
         """
         from collections import defaultdict
         
-        #  label 分布
+        #  label distribution for each state
         state_label_dist = defaultdict(lambda: defaultdict(int))
         for seq, y in zip(data, labels):
             cur = dfa.initial_state
@@ -1102,12 +1123,12 @@ class DFALearner(BaseAutomataLearner):
                 cur = cur.transitions[sym]
             state_label_dist[cur.state_id][y] += 1
         
-        # 計算每個狀態的主要 label
+        # compute the main label for each state
         def main_label(state_id):
             dist = state_label_dist[state_id]
             return max(dist, key=dist.get) if dist else None
         
-        # 選擇 label 相同的狀態對（非常快）
+        # select pairs of states with the same main label
         pair_scores = []
         for s1, s2 in itertools.combinations(dfa.states, 2):
             if s1 == dfa.initial_state or s2 == dfa.initial_state:
@@ -1115,13 +1136,13 @@ class DFALearner(BaseAutomataLearner):
             if s1.is_accepting != s2.is_accepting:
                 continue
             
-            # 同類 label 優先
+            # prioritize pairs with the same main label
             if main_label(s1.state_id) == main_label(s2.state_id):
                 pair_scores.append((1.0, s1, s2))
             else:
                 dist1 = state_label_dist[s1.state_id]
                 dist2 = state_label_dist[s2.state_id]
-                # Jaccard 相似度
+                # Jaccard similarity of label distributions
                 all_labels = set(dist1.keys()) | set(dist2.keys())
                 inter = sum(min(dist1.get(y,0), dist2.get(y,0)) for y in all_labels)
                 union = sum(max(dist1.get(y,0), dist2.get(y,0)) for y in all_labels)
@@ -1135,7 +1156,7 @@ class DFALearner(BaseAutomataLearner):
     
     def collect_merge_pairs_all(self, dfa, max_pairs=None):
         """
-        嘗試所有狀態對，讓 accuracy filter 決定
+        try all pairs of states and let the accuracy filter decide which merges are good.
         """
         pairs = []
         for s1, s2 in itertools.combinations(dfa.states, 2):
@@ -1177,7 +1198,7 @@ class DFALearner(BaseAutomataLearner):
         # feasible_pairs = [(s1, s2) for s1, s2 in itertools.combinations(list(dfa.states) , 2)]
 
         if not feasible_pairs:
-            print("  [MERGE] 沒有找到可行的合併狀態對")
+            print("  [MERGE] does not find any feasible pairs to merge, skipping MERGE step.")
             return new_dfas
 
         for s1, s2 in feasible_pairs:
@@ -1224,110 +1245,107 @@ class DFALearner(BaseAutomataLearner):
                 gc.collect()
 
         gc.collect()
+
+        print(f"Generated {len(new_dfas)-1} new DFAs from MERGE modifications.")
+        print("-" * 30)
         return new_dfas
 
-    def _aggregate_cxp_analysis(self, dfa, data, labels, misclassified_paths, alphabet_map, dfa_sig, top_k=10, max_samples=50):
+    def _aggregate_cxp_analysis(self, dfa, data, labels, misclassified_paths, alphabet_map, dfa_sig, max_samples=10):
         """
-        Aggregate CXP analysis over multiple misclassified paths to compute blame scores.
+        Efficient CXP analysis: Find and explain the most problematic edges.
         
-        This method:
-        1. Collects paths through DFA for each misclassified sample
-        2. Computes CXP (Contrastive eXplanation Path) for each sample
-        3. Counts edge occurrences and CXP hits for each edge
-        4. Computes blame score for each edge
-        5. Returns top-K blamed edges sorted by blame score
+        Strategy:
+        1. Count edge frequencies in misclassified paths
+        2. Find top-K most frequent edges (bottlenecks)
+        3. Sample paths containing these edges
+        4. Compute CXP for sampled paths
+        5. Return edges from shortest CXP
+        
+        This balances efficiency (not analyzing all paths) with accuracy (CXP finds true causes).
         
         Parameters
         ----------
         dfa : Dfa
             The DFA to analyze
         data : list
-            Full dataset (used for checking paths)
+            Full dataset
         labels : np.ndarray
             Labels for dataset
         misclassified_paths : list
-            List of misclassified sequences (error samples)
+            List of misclassified sequences (can be large)
         alphabet_map : dict
-            Mapping from symbols to alphabet indices for CXP computation
+            Mapping from symbols to alphabet indices
         dfa_sig : int
-            Serialized signature of DFA for caching CXP results
+            Serialized signature of DFA
         top_k : int
-            Number of blamed edges to return (default: 10)
+            Number of top frequent edges to focus on (default: 10)
         max_samples : int
-            Maximum number of samples to process for efficiency (default: 50)
+            Maximum number of paths to compute CXP for (default: 50)
             
         Returns
         -------
         dict
             Contains:
-            - 'blamed_edges': list of (src_state_id, symbol, blame_score) tuples, sorted descending
-            - 'edge_stats': dict of {(src_state_id, symbol): {'occ': count, 'cxp': count}}
+            - 'blamed_edges': list of (src_state_id, symbol) from shortest CXP
             - 'total_cxp_computed': number of CXP computations performed
-            
-        Notes
-        -----
-        - Blame score formula: blame(edge) = cxp_hits(edge) / (occ(edge) + 1)
-        - The +1 in denominator prevents division by zero
-        - CXP results are filtered to keep only shortest explanations (most reliable)
-        - Path indices are mapped directly to CXP indices for hit counting
-        - If too many misclassified samples (>50% of data), skip CXP and use simple heuristic
+            - 'cxps': shortest CXP(s) found
         """
-        from dfa_optimization import _cxp_cache
-        
-        edge_occ = defaultdict(int)  # (src_state_id, symbol) -> count of paths using this edge
-        edge_cxp = defaultdict(int)  # (src_state_id, symbol) -> count of CXP hits on this edge
-        cxp_computed = 0
 
-        # Check if too many misclassified samples (sign of broken DFA)
-        # If >50% of data is misclassified, skip CXP to avoid segfaults
-        misclassified_ratio = len(misclassified_paths) / len(data) if len(data) > 0 else 0
-        skip_cxp = misclassified_ratio > 0.5
-        
-        if skip_cxp:
-            print(f"  [SKIP CXP] Too many errors ({len(misclassified_paths)}/{len(data)} = {misclassified_ratio*100:.1f}%) - DFA likely broken, skipping CXP")
+        # Step 1: Count edge frequencies in misclassified paths
+        print(f"  [CXP] Analyzing misclassified paths...")
 
-        # Limit samples for efficiency
-        if max_samples and len(misclassified_paths) > max_samples:
-            misclassified_paths = random.sample(misclassified_paths, max_samples)
+        edge_freq = defaultdict(int)
+        path_by_edge = defaultdict(list)
         
-        if not skip_cxp:
-            print("Computing CXP...")
-        # For selected misclassified path, compute path and CXP (or just count edges if CXP skipped)
-        for idx, test_word in enumerate(misclassified_paths):
-            # Trace path through DFA
+        for path in misclassified_paths:
             current = dfa.initial_state
-            path = []  # List of (state_id, symbol, next_state_id)
-            for sym in test_word:
+            for sym in path:
                 next_state = current.transitions.get(sym)
                 if next_state is None:
                     break
-                # Store state_id instead of state objects
-                path.append((current.state_id, sym, next_state.state_id))
-                edge_occ[(current.state_id, sym)] += 1
+                edge_key = (current.state_id, sym)
+                edge_freq[edge_key] += 1
+                path_by_edge[edge_key].append(path)
                 current = next_state
-            
-            if not path:
-                continue
-            
-            # If CXP is disabled, blame all edges equally (simple heuristic)
-            if skip_cxp:
-                for src_state_id, sym, _ in path:
-                    edge_cxp[(src_state_id, sym)] += 1.0
-                cxp_computed += 1
-                continue
-            
-            # Compute CXP for this word
+        
+        # Step 2: Find the most frequent edge
+        most_frequent_edge, _ = max(edge_freq.items(), key=lambda x: x[1])
+
+        # Step 3: Collect paths containing the most frequent edge
+        # Directly find and keep the first shortest path to reduce computation
+        paths_containing_frequent_edge = path_by_edge[most_frequent_edge]
+        if paths_containing_frequent_edge:
+            shortest_path = min(paths_containing_frequent_edge, key=len)  # Find the first shortest path directly
+            paths_to_analyze = [shortest_path]
+            print(f"  [CXP] Selecting the first shortest path (length={len(shortest_path)})")
+        
+        # Step 4: Compute CXP for sampled paths
+        all_cxps = []
+        all_path_edges = {}
+        cxp_computed = 0
+        
+        for path_idx, path in enumerate(paths_to_analyze):
             try:
-                # Encode word for this iteration
-                encoded_word = [alphabet_map[sym] for sym in test_word if sym in alphabet_map]
+                # Encode word
+                encoded_word = [alphabet_map[sym] for sym in path if sym in alphabet_map]
                 if not encoded_word:
                     continue
                 
-                # Define compute function that captures encoded_word for this iteration
-                def compute_cxp_for_word():
-                    """Compute CXP for a single word."""
+                # Trace edges
+                current = dfa.initial_state
+                path_edges = []
+                for sym in path:
+                    next_state = current.transitions.get(sym)
+                    if next_state is None:
+                        break
+                    path_edges.append((current.state_id, sym, next_state.state_id))
+                    current = next_state
+                all_path_edges[path_idx] = path_edges
+                
+                # Compute CXP
+                try:
                     explanation_engine = ExplainLanguage()
-                    return explanation_engine.explain_word(
+                    result = explanation_engine.explain_word(
                         "dfa_explicit.mata",
                         from_mata=True,
                         word=encoded_word,
@@ -1336,55 +1354,46 @@ class DFALearner(BaseAutomataLearner):
                         bootstrap_cxp_size_1=False,
                         print_exp=False,
                     )
+                    cxp_computed += 1
+                    
+                    cxp_raw = result.get("cxps", [])
+                    if cxp_raw:
+                        all_cxps.extend(cxp_raw)
+                    
+                    # Force garbage collection after each CXP to avoid memory buildup
+                    del explanation_engine
+                    gc.collect()
                 
-                # Use cache if available
-                if OPTIMIZATION_AVAILABLE and _cxp_cache is not None:
-                    result = _cxp_cache.get_cxp(dfa_sig, test_word, compute_cxp_for_word)
-                else:
-                    result = compute_cxp_for_word()
-                cxp_computed += 1
-                
-                cxp_raw = result.get("cxps", [])
-                if not cxp_raw:
-                    continue
-                
-                # for each misclassified sample, select shortest explanations
-                if cxp_raw:
-                    min_len = min(len(seq) for seq in cxp_raw)
-                    cxp_raw = [seq for seq in cxp_raw if len(seq) == min_len]
-                
-                # Aggregate CXP hits
-                # CXP returns indices of positions in the original word
-                for seq in cxp_raw:
-                    # seq is a list of indices into test_word, need to map to path
-                    for pos_in_word in seq:
-                        if 0 <= pos_in_word < len(path):
-                            src_state_id, sym, _ = path[pos_in_word]
-                            edge_cxp[(src_state_id, sym)] += 1
+                except Exception as e:
+                    if path_idx == 0:
+                        print(f"  [CXP] ExplainLanguage failed: {e}")
             
-            except Exception as e:
-                print(f"[Warning] CXP computation failed for sample {idx}: {e}")
-                continue
-            
-        # Compute blame score: blame(e) = cxp[e] / (occ[e] + 1)
-        blame_scores = []
-        for edge, occ_count in edge_occ.items():
-            cxp_count = edge_cxp[edge]
-            blame_score = cxp_count / (occ_count + 1.0)  # +1 to avoid division by zero
-            blame_scores.append((edge[0], edge[1], blame_score, occ_count, cxp_count))
+            except Exception:
+                pass
         
-        # Sort by blame score descending
-        blame_scores.sort(key=lambda x: x[2], reverse=True)
-        print(f"Computed CXP for {cxp_computed} samples, found {len(blame_scores)} blamed edges")
-
-        # Return top-K
-        result = {
-            'blamed_edges': [(src, sym, score) for src, sym, score, _, _ in blame_scores[:top_k]],
-            'edge_stats': {(src, sym): {'occ': occ, 'cxp': cxp} 
-                          for src, sym, _, occ, cxp in blame_scores},
-            'total_cxp_computed': cxp_computed
-        }
-        return result
+        # Step 5: Find shortest CXP and extract edges
+        min_len = min(len(seq) for seq in all_cxps)
+        cxp_best_list = [seq for seq in all_cxps if len(seq) == min_len]
+        
+        # Remove duplicates from shortest CXP
+        cxp_best = list(set(tuple(seq) for seq in cxp_best_list))
+        
+        print(f"  [CXP] Found {len(cxp_best)} unique shortest explanations (len={min_len}) [were {len(cxp_best_list)}]")
+        
+        # Extract edges from shortest CXP
+        reference_path_edges = all_path_edges.get(0, [])
+        
+        blamed_edges_set = set()
+        for seq in cxp_best:
+            for pos_in_word in seq:
+                if 0 <= pos_in_word < len(reference_path_edges):
+                    src_state_id, sym, _ = reference_path_edges[pos_in_word]
+                    blamed_edges_set.add((src_state_id, sym))
+        
+        blamed_edges_list = list(blamed_edges_set)
+        print(f"  [CXP] Identified {len(blamed_edges_list)} edges from shortest CXP")
+        
+        return blamed_edges_list
 
     def _propose_delta(self, dfa, state, data, labels, seen_signatures, top_k_blamed_edges=20, max_misclassified_samples=50):
         """
@@ -1425,14 +1434,12 @@ class DFALearner(BaseAutomataLearner):
         
         false_accept_indices = np.where((labels == 0) & (accepts == True))[0]
         true_reject_indices = np.where((labels == 1) & (accepts == False))[0]
-        
         misclassified_indices = np.concatenate([false_accept_indices, true_reject_indices])
         if len(misclassified_indices) == 0:
-            print("No misclassified samples found, skipping.")
+            print("  [CXP] No misclassified paths to analyze")
             return new_dfas
-        
         misclassified_paths = [data[i] for i in misclassified_indices]
-        print(f"Found {len(misclassified_paths)} misclassified samples (false_accept={len(false_accept_indices)}, true_reject={len(true_reject_indices)})")
+        print(f"  [CXP] Found {len(misclassified_paths)} misclassified paths")
         
         # Export DFA to mata format for CXP computation
         try:
@@ -1446,18 +1453,12 @@ class DFALearner(BaseAutomataLearner):
         try:
             cxp_result = self._aggregate_cxp_analysis(
                 dfa, data, labels, misclassified_paths, alphabet_map, dfa_sig,
-                top_k=top_k_blamed_edges,
                 max_samples=max_misclassified_samples
             )
-            blamed_edges = cxp_result['blamed_edges']
         except Exception as e:
             print(f"CXP aggregation failed: {e}")
             return new_dfas
-        
-        if not blamed_edges:
-            print("No blamed edges found after CXP aggregation.")
-            return new_dfas
-        
+                
         # Build reachability information
         reverse_adj = defaultdict(set)
         for st in dfa.states:
@@ -1475,71 +1476,67 @@ class DFALearner(BaseAutomataLearner):
         
         orig_state_by_id = {st.state_id: st for st in dfa.states}
         
-        # Only process the highest blamed edge
-        if not blamed_edges:
-            print("No blamed edges to process")
-            return new_dfas
-        
-        src_state_id, symbol, blame_score = blamed_edges[0]  # Only take the top blamed edge
-        src_state = orig_state_by_id.get(src_state_id)
-        if src_state is None or symbol not in src_state.transitions:
-            print(f"Cannot process top blamed edge: {src_state_id} --{symbol}-->")
-            return new_dfas
-        
-        old_target = src_state.transitions[symbol]
-        print(f"Processing highest blamed edge: {src_state_id} --{symbol}--> {old_target.state_id} (blame={blame_score:.4f})")
-        
-        # Try redirecting this edge to different target states
-        for target_state in dfa.states:
-            if target_state.state_id == old_target.state_id:
-                continue  # Skip if no change
+        # Process each blamed edge
+        for src_state_id, symbol in cxp_result:
+            src_state = orig_state_by_id.get(src_state_id)
+            if src_state is None or symbol not in src_state.transitions:
+                print(f"Cannot process blamed edge: {src_state_id} --{symbol}-->")
+                continue
             
-            new_dfa = dfa.copy()
-            src_new = next(x for x in new_dfa.states if x.state_id == src_state_id)
-            target_new = next(x for x in new_dfa.states if x.state_id == target_state.state_id)
+            old_target = src_state.transitions[symbol]
+            print(f"Processing blamed edge: {src_state_id} --{symbol}--> {old_target.state_id}")
             
-            old_target_new = src_new.transitions[symbol]
-            src_new.transitions[symbol] = target_new
-            
-            # Check if accepting states are still reachable
-            if old_target_new in can_reach_accepting:
-                reachable = set()
-                queue = [new_dfa.initial_state]
-                while queue:
-                    st = queue.pop()
-                    if st not in reachable:
-                        reachable.add(st)
-                        for nxt in st.transitions.values():
-                            queue.append(nxt)
+            # Try redirecting this edge to different target states
+            for target_state in dfa.states:
+                if target_state.state_id == old_target.state_id:
+                    continue  # Skip if no change
                 
-                if not any(st.is_accepting for st in reachable):
-                    # Revert if no accepting states reachable
+                new_dfa = dfa.copy()
+                src_new = next(x for x in new_dfa.states if x.state_id == src_state_id)
+                target_new = next(x for x in new_dfa.states if x.state_id == target_state.state_id)
+                
+                old_target_new = src_new.transitions[symbol]
+                src_new.transitions[symbol] = target_new
+                
+                # Check if accepting states are still reachable
+                if old_target_new in can_reach_accepting:
+                    reachable = set()
+                    queue = [new_dfa.initial_state]
+                    while queue:
+                        st = queue.pop()
+                        if st not in reachable:
+                            reachable.add(st)
+                            for nxt in st.transitions.values():
+                                queue.append(nxt)
+                    
+                    if not any(st.is_accepting for st in reachable):
+                        # Revert if no accepting states reachable
+                        del new_dfa
+                        gc.collect()
+                        continue
+                
+                remove_unreachable_states(new_dfa)
+                
+                # Check for accepting states
+                if not any(st.is_accepting for st in new_dfa.states):
                     del new_dfa
                     gc.collect()
                     continue
-            
-            remove_unreachable_states(new_dfa)
-            
-            # Check for accepting states
-            if not any(st.is_accepting for st in new_dfa.states):
-                del new_dfa
-                gc.collect()
-                continue
-            
-            sig = self.serialize_automaton(new_dfa)
-            if sig not in seen_signatures:
-                seen_signatures.add(sig)
-                self.update_state_metrics(
-                    state, dfa, new_dfa, data, labels, 
-                    f"DELTA-AGG(blame={blame_score:.2f})"
-                )
-                new_dfas.append(new_dfa)
-                print(f"→ Generated new candidate: {src_state_id} --{symbol}--> {target_state.state_id}")
-            else:
-                del new_dfa
-                gc.collect()
-        
-        print(f"Generated {len(new_dfas) - 1} new candidate DFAs")
+                
+                sig = self.serialize_automaton(new_dfa)
+                if sig not in seen_signatures:
+                    seen_signatures.add(sig)
+                    self.update_state_metrics(
+                        state, dfa, new_dfa, data, labels, 
+                        f"DELTA({src_state_id}--{symbol}-->{target_state.state_id})"
+                    )
+                    new_dfas.append(new_dfa)
+                else:
+                    del new_dfa
+                    gc.collect()
+
+        print(f"Generated {len(new_dfas)-1} new DFAs from DELTA modifications.")
+        print("-" * 30)
         return new_dfas
 
     def propose_automata(self, dfas, state, iteration, previous_best: list, output_dir: str, beam_size: int = 10):
@@ -1642,7 +1639,6 @@ __all__ = [
     'scar_to_aalpy_dfa',
     'clone_dfa',
     'remove_unreachable_states',
-    # 'recompute_coverage',
     'delete_state',
     'merge_states',
     'serialize_dfa',

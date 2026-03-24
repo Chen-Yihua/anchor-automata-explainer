@@ -102,4 +102,4 @@ class BaseAutomataLearner(ABC):
 
         # print(f"Proposed Automaton ID: {key_new} (from {key_old} via {op_name})")
         # print(self.automaton_to_graphviz(new_automaton))
-        print("--------------------------------------------")
+        # print("--------------------------------------------")
