@@ -189,7 +189,7 @@ class CXPExplanationCache:
                 return self.cache[key]
             
             # 計算新結果
-            print(f"[CXP] 計算新結果... (快取中已有 {len(self.cache)} 項)")
+            # print(f"[CXP] 計算新結果... (快取中已有 {len(self.cache)} 項)")
             result = compute_fn()
             
             # 加入快取
@@ -198,7 +198,7 @@ class CXPExplanationCache:
                 lru_key = min(self.access_time, key=self.access_time.get)
                 del self.cache[lru_key]
                 del self.access_time[lru_key]
-                print(f"[CXP] 快取已滿，淘汰最少使用的項")
+                # print(f"[CXP] 快取已滿，淘汰最少使用的項")
             
             self.cache[key] = result
             self.access_time[key] = time.time()
