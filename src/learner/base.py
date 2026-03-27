@@ -86,12 +86,12 @@ class BaseAutomataLearner(ABC):
         key_old = id(old_automaton)
         
         # Use subclass's path checking methods
-        # t_idx = set(i for i, p in enumerate(data) if self.check_path_exist(new_automaton, p))
+        t_idx = set(i for i, p in enumerate(data) if self.check_path_exist(new_automaton, p))
         accepts = np.array([self.check_path_accepted(new_automaton, p) for p in data])
         true_accept = np.sum((labels == 1) & (accepts == True))
         false_reject = np.sum((labels == 0) & (accepts == False))
 
-        # state["t_idx"][key_new] = t_idx
+        state["t_idx"][key_new] = t_idx
         state['t_nsamples'][key_new] = float(len(data))
         state['t_accepted'][key_new] = float(np.sum(accepts))
         state["t_positives"][key_new] = float(true_accept)

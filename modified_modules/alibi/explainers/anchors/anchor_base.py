@@ -1,4 +1,3 @@
-
 import logging
 import time
 from collections import defaultdict, namedtuple
@@ -336,16 +335,16 @@ class AnchorBaseBeam:
         t = 1
         crit_a_idx = self.select_critical_arms(means, ub, lb, n_samples, delta, top_n, t)
         B = ub[crit_a_idx.ut] - lb[crit_a_idx.lt]
-        verbose_count = 0
+        # verbose_count = 0
 
         # Optimized parameters for faster convergence
-        # MAX_ROUNDS = 200  # Reduced from 500 (achieves convergence much faster in practice)
-        # no_improvement_count = 0
-        # prev_B = B
+        MAX_ROUNDS = 200
+        no_improvement_count = 0
+        prev_B = B
         
-        while B > epsilon:
+        while B > epsilon and t < MAX_ROUNDS:
             # if verbose_count % verbose_every == 0:
-                # print(f"Round {t}: B={B:.6f}, epsilon={epsilon:.6f} (improvement: {prev_B - B:.6f})")
+                # print(f"Round {t}: B={B:.6f}, epsilon={epsilon:.6f} (improvement: {prev_b - B:.6f})")
             # verbose_count += 1
             # if verbose and verbose_count % verbose_every == 0:
             #     ut, lt = crit_a_idx
@@ -372,18 +371,30 @@ class AnchorBaseBeam:
                 where=n_samples != 0
             )
             crit_a_idx = self.select_critical_arms(means, ub, lb, n_samples, delta, top_n, t)
-            B = ub[crit_a_idx.ut] - lb[crit_a_idx.lt]
+            B_new = ub[crit_a_idx.ut] - lb[crit_a_idx.lt]
             
             # Early stopping: check for convergence stalling (no significant improvement)
-            # if abs(prev_B - B) < epsilon * 0.01:
-            #     no_improvement_count += 1
-            #     if no_improvement_count > 5:
-            #         if verbose:
-            #             print(f"Early stopping at round {t}: B value not improving significantly")
-            #         break
-            # else:
-            #     no_improvement_count = 0
-            # prev_B = B
+            # Use relative improvement: if B decreased by less than 1% of previous B, count as no improvement
+            improvement = prev_B - B_new
+            # More robust: use relative improvement if B > epsilon, else use absolute threshold
+            if prev_B > epsilon:
+                relative_improvement = improvement / prev_B if prev_B > 0 else 0
+                no_sig_improvement = relative_improvement < 0.01  # Less than 1% relative improvement
+            else:
+                no_sig_improvement = improvement < epsilon * 0.05  # Within 5% of epsilon
+            
+            if no_sig_improvement:
+                no_improvement_count += 1
+                if no_improvement_count >= 3:  # Stop after 3 rounds of no improvement
+                    if verbose:
+                        print(f"  [KLLUCB] Early stopping at round {t}: B not converging (B={B_new:.6f}, ε={epsilon:.6f}, improvement={improvement:.6f})")
+                    break
+            else:
+                no_improvement_count = 0
+            
+            prev_B = B_new
+            B = B_new
+            t += 1
 
         sorted_means = np.argsort(means)
 
@@ -404,8 +415,6 @@ class AnchorBaseBeam:
         total number of samples drawn.
         """
         sample_stats: List = []
-        pos: Tuple = tuple()
-        total: Tuple = tuple()
         samples_iter = [self.sample_fcn(num_samples=batch_size) for dfa in dfas]
         
         for samples, dfa in zip(samples_iter, dfas):
@@ -413,7 +422,12 @@ class AnchorBaseBeam:
 
             # update state records
             sample_stats.append(self.update_state(labels, raw_data, dfa))
-            true_accept, false_reject, total, accepted = list(zip(*sample_stats))
+        
+        # Unzip all statistics after processing all DFAs
+        if sample_stats:
+            true_accept, false_reject, total, accepted = tuple(zip(*sample_stats))
+        else:
+            true_accept, false_reject, total, accepted = (), (), (), ()
 
         return true_accept, false_reject, total, accepted
 
@@ -468,7 +482,7 @@ class AnchorBaseBeam:
         self.state['labels'][current_idx:current_idx + n_samples] = labels
         self.state['current_idx'] += n_samples
 
-        return true_accept.sum(), false_reject.sum(), n_samples, np.sum(accepts)
+        return int(true_accept), int(false_reject), n_samples, int(np.sum(accepts))
 
     def get_init_stats(self, dfas: list, coverages=False) -> dict:
         """
@@ -742,9 +756,9 @@ class AnchorBaseBeam:
 
             # Generate initial automaton with state count
             init_start = time.perf_counter()
-            min_states_threshold, max_states_threshold = 30, 40
+            min_states_threshold, max_states_threshold = 30, 45
             attempt = 0
-            max_attempts = 10
+            max_attempts = 20
             origin_automata = None
             inti_samples = None
             inti_label = None
@@ -840,7 +854,7 @@ class AnchorBaseBeam:
             print("Beam Search Iteration:", self.iteration)
 
             # create new candidate anchors by adding features to current best anchors
-            automatas = AUTO_INSTANCE.propose_automata(self.automatas, self.state, self.iteration, best_of_size.get(self.iteration, []), output_dir, beam_size)
+            automatas = AUTO_INSTANCE.propose_automata(self.automatas, self.state, self.iteration, best_of_size.get(self.iteration, []), output_dir, beam_size, batch_size)
             total_candidates_proposed += len(automatas)
 
             # Early stopping: if no better coverage found with added features, stop
@@ -976,7 +990,7 @@ class AnchorBaseBeam:
                 "states": [len(d.states) for d in current_round_automatas],
             }
             iteration_stats.append(round_stats)
-            print(f"[Iteration {self.iteration}] Training accuracies: {round_stats['training_accuracies']}, States: {round_stats['states']}")
+            print(f"[Iteration {self.iteration}] Training accuracies: {[str(acc) for acc in round_stats['training_accuracies']]}, States: {round_stats['states']}")
             
             self.iteration += 1
 
@@ -993,7 +1007,7 @@ class AnchorBaseBeam:
             plot_dfa_beam_stats(iteration_stats, beam_size, output_dir=output_dir)
 
         # according to the select_by strategy, pick the best candidate from all_history and do final cleanup before returning metadata
-        def _cleanup_and_return(best_record, success, label=""):
+        def _cleanup_and_return(best_record, success, label="", reason=""):
             initial_metadata = self.get_automata_metadata(origin_automata, success=True, batch_size=batch_size)
             initial_state_count = len(origin_automata.states) if hasattr(origin_automata, 'states') else (origin_automata.size if hasattr(origin_automata, 'size') else None)
             
@@ -1025,6 +1039,7 @@ class AnchorBaseBeam:
                 'training_accuracies': [initial_metadata['training_accuracy'], final_metadata['training_accuracy']],  # [initial, final]
                 'validation_accuracies': [initial_metadata['validation_accuracy'], final_metadata['validation_accuracy']],  # [initial, final]
                 'success': success,
+                'reason': reason,  # Explain why this result was selected
                 'budget_used': total_candidates_proposed,  
                 'validation_data': self.validation_data,
                 'validation_labels': self.validation_labels,
@@ -1046,13 +1061,13 @@ class AnchorBaseBeam:
                     best = min(qualified, key=lambda x: x["states"])
                     print(f"  [accuracy mode] {len(qualified)} candidates meet accuracy >= {accuracy_threshold}.")
                     print(f"  Selected: states={best['states']}, accuracy={best['accuracy']:.4f}")
-                    return _cleanup_and_return(best, success=True, label="qualified(accuracy)")
+                    return _cleanup_and_return(best, success=True, label="qualified(accuracy)", reason="Found candidate meeting accuracy threshold")
                 else:
-                    # if no candidates meet accuracy threshold, fallback to best-effort: pick candidate with highest accuracy regardless of state count
+                    # if no candidates meet accuracy threshold, pick candidate with highest accuracy regardless of state count
                     best = max(all_history, key=lambda x: x["accuracy"])
                     print(f"  [accuracy mode] No candidate meets accuracy >= {accuracy_threshold}.")
                     print(f"  Best-effort: states={best['states']}, accuracy={best['accuracy']:.4f}")
-                    return _cleanup_and_return(best, success=False, label="best-effort(accuracy)")
+                    return _cleanup_and_return(best, success=False, label="best-effort(accuracy)", reason=f"No candidate meets accuracy >= {accuracy_threshold}. Returning best-effort with highest accuracy.")
 
             elif select_by == "state":
                 # mode 2: prioritize state_threshold - find candidates meeting state count threshold, then pick highest accuracy
@@ -1061,13 +1076,13 @@ class AnchorBaseBeam:
                     best = max(under_state, key=lambda x: x["accuracy"])
                     print(f"  [state mode] {len(under_state)} candidates have states <= {state_threshold}.")
                     print(f"  Selected: states={best['states']}, accuracy={best['accuracy']:.4f}")
-                    return _cleanup_and_return(best, success=True, label="qualified(state)")
+                    return _cleanup_and_return(best, success=True, label="qualified(state)", reason="Found candidate meeting state threshold")
                 else:
                     # if no candidates meet state count threshold, fallback to best-effort: pick candidate with highest accuracy regardless of state count
                     best = max(all_history, key=lambda x: x["accuracy"])
                     print(f"  [state mode] No candidate has states <= {state_threshold}.")
                     print(f"  Best-effort: states={best['states']}, accuracy={best['accuracy']:.4f}")
-                    return _cleanup_and_return(best, success=False, label="best-effort(state)")
+                    return _cleanup_and_return(best, success=False, label="best-effort(state)", reason=f"No candidate has states <= {state_threshold}. Returning best-effort with highest accuracy.")
             else:
                 raise ValueError(f"Unknown select_by='{select_by}'. Use 'accuracy' or 'state'.")
 
@@ -1091,6 +1106,7 @@ class AnchorBaseBeam:
             'training_accuracies': [initial_metadata['training_accuracy'], initial_metadata['training_accuracy']],  # [initial, final] (same)
             'validation_accuracies': [initial_metadata['validation_accuracy'], initial_metadata['validation_accuracy']],  # [initial, final] (same)
             'success': False,
+            'reason': 'No candidates generated during beam search. Returning initial automaton only.',
             'budget_used': total_candidates_proposed if total_candidates_proposed > 0 else 1,  # Total candidates proposed, or 1 if none
             'validation_data': self.validation_data,
             'validation_labels': self.validation_labels,
