@@ -319,7 +319,7 @@ result = ga_dfa_search(
 
 ### map 到 DFA 
 
-關鍵: 粒子的位置 position 不直接表示一個 DFA，而是表示一組可能的 refinement 操作，再映射成實際的 DFA
+關鍵: 將連續位置轉換成離散 DFA。粒子的位置 position 不直接表示一個 DFA，而是表示一組可能的 refinement 操作，再轉換成實際的 DFA
 
 - `particle` : (current_dfa, position, velocity, pbest, pbest_accuracy)
    - 每個粒子對應一個目前的候選 DFA，以及其在操作空間中的位置、速度與歷史最佳資訊
