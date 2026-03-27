@@ -21,6 +21,9 @@ external_modules/
 # modified_packages/
 pickle/
 
+# Test files
+tests/
+
 # Standalone log files from example scripts
 examples/**/*.log
 examples/**/*.txt
