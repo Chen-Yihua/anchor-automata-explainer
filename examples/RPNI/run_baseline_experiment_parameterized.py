@@ -74,7 +74,7 @@ def get_languages_config(accuracy_threshold):
             accuracy_threshold = accuracy_threshold,
             state_threshold = 10,
             delta           = 0.01,
-            tau             = 0.05,
+            tau             = 0.1,
             batch_size      = 2000,
             beam_size       = 1,
             init_num_samples= 2000,
@@ -89,7 +89,7 @@ def get_languages_config(accuracy_threshold):
             accuracy_threshold = accuracy_threshold,
             state_threshold = 5,
             delta           = 0.01,
-            tau             = 0.05,
+            tau             = 0.1,
             batch_size      = 500,
             beam_size       = 1,
             init_num_samples= 2000,
@@ -104,7 +104,7 @@ def get_languages_config(accuracy_threshold):
             accuracy_threshold = accuracy_threshold,
             state_threshold = 5,
             delta           = 0.01,
-            tau             = 0.05,
+            tau             = 0.1,
             batch_size      = 500,
             beam_size       = 1,
             init_num_samples= 2000,
@@ -119,7 +119,7 @@ def get_languages_config(accuracy_threshold):
             accuracy_threshold = accuracy_threshold,
             state_threshold = 5,
             delta           = 0.01,
-            tau             = 0.05,
+            tau             = 0.1,
             batch_size      = 500,
             beam_size       = 1,
             init_num_samples= 1000,
@@ -134,11 +134,11 @@ def get_languages_config(accuracy_threshold):
             accuracy_threshold = accuracy_threshold,
             state_threshold = 5,
             delta           = 0.01,
-            tau             = 0.05,
+            tau             = 0.1,
             batch_size      = 2000,
             beam_size       = 1,
-            init_num_samples= 1000,
-            edit_distance   = 8,
+            init_num_samples= 800,
+            edit_distance   = 10,
             select_by       = 'accuracy',
             max_length      = 20, embedding_dim = 64, hidden_dim = 256,
             num_layers      = 2,  dropout = 0.3,
@@ -468,6 +468,12 @@ def run_one_language(lang_code: str, cfg: dict, output_root: str) -> dict | None
         final_state = getattr(beam_expl, 'final_state')
         beam_success = getattr(beam_expl, 'success')
         budget_used = getattr(beam_expl, 'budget_used', None)
+        
+        # Ensure final_state is an integer (handle list case from older versions)
+        if isinstance(final_state, list):
+            final_state = final_state[-1] if final_state else 0
+        final_state = int(final_state) if final_state else 0
+        
         print(f"    train={final_train:.4f}  states={final_state}  time={beam_time:.1f}s"
               f"  {'✓' if beam_success else '✗'}")
 
@@ -509,7 +515,7 @@ def run_one_language(lang_code: str, cfg: dict, output_root: str) -> dict | None
     results['beam'] = dict(
         train_acc   = final_train,
         validation_acc = final_validation,
-        final_state = final_state,
+        states      = final_state,
         time        = beam_time,
         success     = beam_success,
     )
@@ -630,6 +636,41 @@ def run_one_language(lang_code: str, cfg: dict, output_root: str) -> dict | None
           f"states={pso_states}  time={pso_time:.1f}s"
           f"  {'✓' if pso_res.get('success') else '✗'}")
 
+    # ── Cleanup resources after language experiment ─────────────────────
+    print(f"\n  [CLEANUP] Cleaning up resources for {lang_code}...")
+    import gc
+    
+    # Clean up DFA optimizer cache if available
+    try:
+        from dfa_optimization import _cxp_cache
+        if _cxp_cache is not None and hasattr(_cxp_cache, 'clear'):
+            _cxp_cache.clear()
+            print(f"  [CLEANUP] Cleared CXP cache")
+    except:
+        pass
+    
+    # Delete global learner instance to free memory
+    try:
+        from search_baselines import _AUTO_INSTANCE
+        _AUTO_INSTANCE = None
+        print(f"  [CLEANUP] Cleared global AUTO_INSTANCE")
+    except:
+        pass
+    
+    # Clean up mata files left over from CXP analysis
+    mata_files = ['dfa_explicit.mata', 'explanation.txt']
+    for fname in mata_files:
+        if os.path.exists(fname):
+            try:
+                os.remove(fname)
+                print(f"  [CLEANUP] Removed {fname}")
+            except Exception as e:
+                print(f"  [CLEANUP] Failed to remove {fname}: {e}")
+    
+    # Force garbage collection
+    gc.collect()
+    print(f"  [CLEANUP] Garbage collection complete\n")
+
     return results
 
 
@@ -673,49 +714,56 @@ def print_summary(all_results: dict, accuracy_threshold: float = 0.9) -> None:
             val_init = res.get('initial_validation_acc', 0)
             val_final = r.get('validation_acc', 0)
             
+            # Safely extract states count, handling both int and list formats
+            states_val = r.get('states', 0)
+            if isinstance(states_val, list):
+                states_val = states_val[-1] if states_val else 0
+            states_val = int(states_val) if states_val else 0
+            
+            time_val = r.get('time', 0)
+            if isinstance(time_val, list):
+                time_val = time_val[-1] if time_val else 0.0
+            time_val = float(time_val) if time_val else 0.0
+            
             print(f"  | {METHOD_LABELS[m]:12s} | "
                   f"{train_init:.4f}→{train_final:.4f} {ok:1s}       | "
                   f"{val_init:.4f}→{val_final:.4f}       | "
-                  f"{r.get('states', 0):10d} | "
-                  f"{r.get('time', 0):10.1f} |")
+                  f"{states_val:10d} | "
+                  f"{time_val:10.1f} |")
         print("  " + "─" * 96)
 
-    # Paper suitability analysis
+    # Paper suitability analysis (per-method: initial vs final)
     print("\n\n  PAPER SUITABILITY ANALYSIS")
-    print("  " + "─" * 66)
-    print(f"  {'Lang':6s}  {'BeamSearch':>10s}  {'SA':>8s}  "
-          f"{'GA':>8s}  {'PSO':>8s}  {'Δ_validation':>10s}  {'Comment':s}")
-    print("  " + "─" * 66)
+    print("  " + "─" * 110)
+    print(f"  {'Lang':6s}  {'Method':10s}  {'Δ_validation':>14s}  {'Δ_train':>10s}  {'Δ_state':>10s}  {'Init_Val':>10s}  {'Final_Val':>10s}  {'Init_Train':>10s}  {'Final_Train':>10s}  {'Init_States':>10s}  {'Final_States':>10s}")
+    print("  " + "─" * 110)
 
     for lang_code, res in sorted(all_results.items()):
         if res is None:
             print(f"  {lang_code:6s}  [NO DATA]")
             continue
-        beam_h = res.get('beam', {}).get('validation_acc', 0)
-        sa_h   = res.get('sa',   {}).get('validation_acc', 0)
-        ga_h   = res.get('ga',   {}).get('validation_acc', 0)
-        pso_h  = res.get('pso',  {}).get('validation_acc', 0)
-        best_baseline = max(sa_h, ga_h, pso_h)
-        delta = beam_h - best_baseline
+        init_val = res.get('initial_validation_acc', 0)
+        init_train = res.get('initial_train_acc', 0)
+        init_states = res.get('initial_dfa_states', 0)
+        if isinstance(init_states, list):
+            init_states = init_states[-1] if init_states else 0
+        init_states = int(init_states) if init_states else 0
 
-        # Simple heuristic to flag "interesting" languages
-        bean_states = res.get('beam', {}).get('states', 0)
-        comment = []
-        if delta > 0.05:
-            comment.append("beam clearly wins")
-        elif delta < -0.05:
-            comment.append("baseline beats beam!")
-        else:
-            comment.append("methods similar")
-        if bean_states >= 3:
-            comment.append("non-trivial DFA")
-        if res['initial_dfa_states'] >= 5:
-            comment.append("rich init")
+        for m in ['beam', 'sa', 'ga', 'pso']:
+            r = res.get(m, {})
+            val = r.get('validation_acc', 0)
+            train = r.get('train_acc', 0)
+            states = r.get('states', 0)
+            if isinstance(states, list):
+                states = states[-1] if states else 0
+            states = int(states) if states else 0
 
-        print(f"  {lang_code:6s}  {beam_h:10.4f}  {sa_h:8.4f}  "
-              f"{ga_h:8.4f}  {pso_h:8.4f}  {delta:+10.4f}  "
-              f"{', '.join(comment)}")
+            delta_val = val - init_val
+            delta_train = train - init_train
+            delta_states = states - init_states
 
+            print(f"  {lang_code:6s}  {m:10s}  {delta_val:14.4f}  {delta_train:10.4f}  {delta_states:10d}  "
+                  f"{init_val:10.4f}  {val:10.4f}  {init_train:10.4f}  {train:10.4f}  {init_states:10d}  {states:10d}")
     print()
 
 
@@ -763,9 +811,16 @@ if __name__ == "__main__":
         default=0.9,
         help="Accuracy threshold for all languages (default: 0.9)"
     )
+    parser.add_argument(
+        "--cxp_timeout",
+        type=int,
+        default=30,
+        help="CXP subprocess timeout in seconds (default: 30)"
+    )
     args = parser.parse_args()
 
     accuracy_threshold = args.accuracy_threshold
+    cxp_timeout = args.cxp_timeout
     LANGUAGES = get_languages_config(accuracy_threshold)
 
     OUTPUT_ROOT = os.path.join(

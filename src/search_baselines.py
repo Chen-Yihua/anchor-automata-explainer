@@ -252,7 +252,7 @@ def _select_final(all_history: list,
     "state"     – among candidates with states <= state_threshold, pick highest accuracy.
     Fallback    – best-effort (highest accuracy) when no candidate meets the threshold.
     """
-    def _cleanup(best_record: dict, success: bool) -> dict:
+    def _cleanup(best_record: dict, success: bool, reason: str = "") -> dict:
         automata = best_record["automata"]
         if automaton_type.upper() == "DFA":
             from learner.dfa_learner import remove_unreachable_states
@@ -269,6 +269,7 @@ def _select_final(all_history: list,
             'coverage':          [],
             'examples':          [],
             'success':           success,
+            'reason':            reason,  # Explain why this result was selected
             'false_accept':      [],
             'true_reject':       [],
         }
@@ -289,6 +290,7 @@ def _select_final(all_history: list,
             'coverage':          [],
             'examples':          [],
             'success':           False,
+            'reason':            'No candidates generated. Returning initial DFA only.',
             'false_accept':      [],
             'true_reject':       [],
         }
@@ -299,12 +301,12 @@ def _select_final(all_history: list,
             best = min(qualified, key=lambda x: x["states"])
             print(f"  [accuracy mode] {len(qualified)} candidate(s) meet training_accuracy >= {accuracy_threshold}.")
             print(f"  Selected: states={best['states']}, training_accuracy={best['training_accuracy']:.4f}, validation_accuracy={best['validation_accuracy']:.4f}")
-            return _cleanup(best, success=True)
+            return _cleanup(best, success=True, reason="Found candidate meeting accuracy threshold")
         else:
             best = max(all_history, key=lambda x: x["training_accuracy"])
             print(f"  [accuracy mode] No candidate meets accuracy threshold.")
             print(f"  Best-effort: states={best['states']}, training_accuracy={best['training_accuracy']:.4f}, validation_accuracy={best['validation_accuracy']:.4f}")
-            return _cleanup(best, success=False)
+            return _cleanup(best, success=False, reason=f"No candidate meets accuracy >= {accuracy_threshold}. Returning best-effort with highest accuracy.")
 
     elif select_by == "state":
         under = [r for r in all_history if r["states"] <= state_threshold]
@@ -312,12 +314,12 @@ def _select_final(all_history: list,
             best = max(under, key=lambda x: x["training_accuracy"])
             print(f"  [state mode] {len(under)} candidate(s) have states <= {state_threshold}.")
             print(f"  Selected: states={best['states']}, training_accuracy={best['training_accuracy']:.4f}, validation_accuracy={best['validation_accuracy']:.4f}")
-            return _cleanup(best, success=True)
+            return _cleanup(best, success=True, reason="Found candidate meeting state threshold")
         else:
             best = max(all_history, key=lambda x: x["training_accuracy"])
             print(f"  [state mode] No candidate has states <= {state_threshold}.")
             print(f"  Best-effort: states={best['states']}, training_accuracy={best['training_accuracy']:.4f}, validation_accuracy={best['validation_accuracy']:.4f}")
-            return _cleanup(best, success=False)
+            return _cleanup(best, success=False, reason=f"No candidate has states <= {state_threshold}. Returning best-effort with highest accuracy.")
 
     else:
         raise ValueError(f"Unknown select_by='{select_by}'. Use 'accuracy' or 'state'.")
@@ -422,6 +424,11 @@ class DFAAnnealer(Annealer):
             if candidate_acc > current_best_acc:
                 self.best_dfa = copy.deepcopy(candidate)
                 print(f"  [SA-iter{self.iteration_count}] NEW best: acc={candidate_acc:.4f}, states={len(candidate.states)}, evals: {self.evaluations_count}/{self.max_evaluations}")
+            
+            # Early stopping: if we reach 2 states, stop the search
+            if len(candidate.states) == 2:
+                print(f"  [SA] Early stopping: reached 2 states at iteration {self.iteration_count}")
+                self.user_exit = True
     
     def energy(self):
         """Return negative accuracy (we minimize energy)."""
@@ -686,6 +693,11 @@ def ga_dfa_search(sampler_fn: Callable,
             'best_states': min(sizes) if sizes else 0,
             'avg_states': np.mean(sizes) if sizes else 0,
         })
+        
+        # Early stopping: if any individual has 2 states, stop the search
+        if min(sizes) == 2:
+            print(f"  [GA] Early stopping: reached 2 states at generation {gen}")
+            break
     
     print(f"\n[GA-Original] Completed {gen} generations, {len(all_history)} candidates total, final evals: {evaluations_count}/{max_evaluations}")
     
@@ -758,7 +770,7 @@ def pso_dfa_search(sampler_fn: Callable,
     # Each PSO iteration evaluates n_particles candidates, so:
     # n_iterations ≈ max_evaluations / n_particles
     # Clamp between [5, 100] to ensure reasonable bounds
-    n_iterations = max(5, min(100, max_evaluations // max(n_particles, 1)))
+    n_iterations = max_evaluations // n_particles
     
     print(f"[PSO] Configuration:")
     print(f"  Particles: {n_particles}")
@@ -773,8 +785,10 @@ def pso_dfa_search(sampler_fn: Callable,
             initial_dfa=initial_dfa,
             threshold=accuracy_threshold,
             data=training_data,
-            labels=training_labels,            validation_data=validation_data,
-            validation_labels=validation_labels,            learner=shared_init.learner,
+            labels=training_labels,            
+            validation_data=validation_data,
+            validation_labels=validation_labels,            
+            learner=shared_init.learner,
             n_particles=n_particles,
             n_iterations=n_iterations,
             w=0.7,
@@ -819,6 +833,11 @@ def pso_dfa_search(sampler_fn: Callable,
         # Optionally report how many evaluations PSO performed
         if 'evaluations' in pso_result:
             print(f"  [PSO] Evaluations used: {pso_result['evaluations']} / {pso_result.get('max_evaluations')}")
+        
+        # Check if we have a 2-state solution from PSO
+        min_states = min([record['states'] for record in all_history] if all_history else [float('inf')])
+        if min_states == 2:
+            print(f"  [PSO] Early stopping: reached 2 states")
         
     except Exception as e:
         print(f"[PSO WARNING] Optimization failed: {e}")
