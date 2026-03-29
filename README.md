@@ -232,6 +232,5 @@ python examples/RPNI/TestRobotTabularRPNI.py
 
 ## 進階開發/參數詳解
 
-- anchor 各類參數與內部狀態說明，請見 [DEV.md](./DEV.md)
+- 搜尋基準流程說明（PSO / SA / GA）：請參閱 [PSO_SA_GA_process.md](PSO_SA_GA_process.md)
 - alibi 主要修改記錄、anchor 內部實作細節，請見 [DEV.md](./DEV.md)
----

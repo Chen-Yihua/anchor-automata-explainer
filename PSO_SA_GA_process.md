@@ -26,12 +26,10 @@
 
 ### 1. DFA 修改操作（propose_automata）
 
-從初始 DFA 生成候選 DFA 有三種操作：
-- DELETE: 刪除一個狀態
-- MERGE: 合併兩個狀態
-- DELTA: 修改轉移函數
+- DELETE: 刪除一個狀態 `learner._propose_delete()`
+- MERGE: 合併兩個狀態 `learner._propose_merge()`
+- DELTA: 修改轉移函數 `learner._propose_delta()`
 
-這些操作由 `learner._propose_delete()`、`learner._propose_merge()`、`learner._propose_delta()` 實現。
 
 ### 2. DFA 評估（_compute_accuracy）
 
@@ -41,21 +39,24 @@ accepts = [learner.check_path_accepted(dfa, path) for path in training_data]
 accuracy = (True_Positives + True_Negatives) / len(training_data)
 ```
 
-### 3. 損失函數（_compute_loss）
-
-```python
-if accuracy < threshold:
-    loss = 1000 + (threshold - accuracy) × 100  # 強烈懲罰低準確度
-else:
-    loss = num_states  # 獎勵最小化狀態數
-```
-
-### 4. 共享初始化（SharedInit）
+### 3. 共享初始化（SharedInit）
 
 所有三種演算法從相同的起點開始：
 - 初始 DFA（通過 RPNI 生成）
-- 訓練資料（擾動採樣）
 - 驗證資料（用於評估最終 DFA）
+
+## Beam Search (Anchor beam)
+
+負責產生供 SA/GA/PSO 共用的 `SharedInit`（initial DFA、validation data）
+
+流程：
+- 初始化：使用 RPNI 建構 `initial_dfa` 並計算初始訓練/驗證準確度
+- 迭代脈絡：每次 beam 迭代呼叫 `propose_automata`，以 KL-LUCB 排序並保留 top-k。
+- 停止條件：beam search 在 state 剩下 2 時，自動停止
+
+在做 baseline 比較時，將「beam 評估 DFA 的次數」傳給 SA/GA/PSO 作為 `max_evaluations`，確保公平比較。
+
+- 輸出：beam 會把 `SharedInit` 與 `beam_results.pkl` 儲存供後續 baseline 使用
 
 ---
 
@@ -68,6 +69,7 @@ else:
 2. 重複直到 T < T_min 或達到迭代限制：
    a) 生成鄰域解（即鄰近的 DFA）
    b) 計算能量差 ΔE = Energy(新DFA) - Energy(當前DFA)
+      Energy 計算 : -training_accuracy，Negative because Annealer minimizes energy
    c) 如果 ΔE < 0，接受新解
       否則，以概率 exp(-ΔE/T) 接受新解
    d) 溫度遞減: T = T × cooling_rate
@@ -86,6 +88,9 @@ self.current_dfa          # 當前 DFA
 self.best_dfa             # 全局最優 DFA
 self.evaluations_count    # DFA 評估計數（重要：停止條件）
 self.max_evaluations      # 評估預算
+steps: int = 500          # 最多500次迭代
+T_max: float = 10.0       # 初始溫度
+T_min: float = 0.001      # 最小溫度
 ```
 
 #### DFA-SA 搜尋流程
@@ -102,14 +107,28 @@ DFAAnnealer.anneal() 主迴圈：
    │
    ├─ 邊界檢查
    │  └─ if evaluations_count >= max_evaluations:
-   │     → 拋出 RuntimeError（"SA budget exhausted"）停止
+   │     → break
    │
-   ├─ 生成鄰域
-   │  ├─ 呼叫 _get_candidates(current_dfa, state, iteration, beam_size=1)
-   │  │  → propose_automata 生成 1 個候選（隨機的 DELETE/MERGE/DELTA）
-   │  │  → 返回 [candidate_dfa]
+   ├─ 生成隨機鄰域（標準 SA：純隨機鄰近生成）
    │  │
-   │  └─ evaluations_count += 1（計數增加）
+   │  ├─ 隨機選擇操作 operation = random.choice(['DELETE', 'MERGE', 'DELTA'])
+   │  │
+   │  ├─ if operation == 'DELETE':
+   │  │  └─ candidates = learner._propose_delete(current_dfa)
+   │  │     → 返回所有可能刪除的候選
+   │  │     → 隨機選一個：candidate = random.choice(candidates)
+   │  │
+   │  ├─ elif operation == 'MERGE':
+   │  │  └─ candidates = learner._propose_merge(current_dfa)
+   │  │     → 返回所有可能合併的候選
+   │  │     → 隨機選一個：candidate = random.choice(candidates)
+   │  │
+   │  └─ elif operation == 'DELTA':
+   │     └─ candidates = learner._propose_delta(current_dfa, propose_state)
+   │        → 返回所有可能修改的候選
+   │        → 隨機選一個：candidate = random.choice(candidates)
+   │
+   │  └─ evaluations_count += 1（計數增加，評估了 1 個鄰近解）
    │
    ├─ 評估鄰域
    │  ├─ 計算 candidate_acc = _compute_accuracy(candidate_dfa, training_data)
@@ -145,10 +164,11 @@ DFAAnnealer.anneal() 主迴圈：
 | 純 SA 概念 | 映射到 DFA | 說明 |
 |-----------|-----------|------|
 | 初始解 | 初始 DFA | RPNI 生成的初始聚类結果 |
-| 鄰域生成 | propose_automata | 三種修改操作（DELETE/MERGE/DELTA） |
+| 鄰域生成 | learner._propose_delete/merge/delta | 純隨機選擇一個操作，然後隨機選一個候選 |
 | 能量函數 | -accuracy | 最小化能量 = 最大化準確度 |
 | 溫度影響 | 接受概率 | 高溫時容易接受壞解（探索），低溫時傾向於接受好解（利用） |
 | 停止條件 | max_evaluations | 當評估的 DFA 數達到預算上限 |
+
 
 #### 程式碼流程範例
 
@@ -161,7 +181,7 @@ annealer = DFAAnnealer(
 )
 annealer.Tmax = 10.0
 annealer.Tmin = 0.001
-annealer.steps = 500  # 最多 500 次迭代（但通常會因預算用盡而提前停止）
+annealer.steps = 500  # 最多 500 次迭代（通常會因預算用盡而提前停止）
 
 # 執行（會在 evaluations_count >= 500 時停止）
 best_dfa, best_energy = annealer.anneal()
@@ -177,9 +197,10 @@ best_dfa, best_energy = annealer.anneal()
 1. 初始化：生成初始種群（N 個個體）
 2. 重複直到收斂：
    a) 評估種群中每個個體的適應度（fitness）
+      fitness 計算 : training_accuracy
    b) 選擇階段：根據適應度選擇高品質個體作為親本
-   c) 交叉階段：兩個親本交叉產生後代（可能結合雙方特徵）
-   d) 變異階段：後代隨機變異（引入多樣性）
+   c) 交叉階段：兩個親本交叉產生後代（結合雙方特徵）(DFA 不做這步驟)
+   d) 變異階段：後代隨機變異
    e) 替換：新種群替代舊種群
 3. 返回最優個體
 ```
@@ -188,13 +209,17 @@ best_dfa, best_energy = annealer.anneal()
 
 #### GA 配置
 
-注意: DFA 沒有良好定義的交叉操作（兩個 DFA 如何交叉？），因此使用 變異之外的演算法。
+注意: DFA 沒有良好定義的交叉操作（兩個 DFA 如何交叉？），因此只使用變異操作。
 
 ```python
 population_size = 20      # 每代種群大小
 tournament_size = 2       # 錦標賽選擇時對比 2 個個體
 mutation_rate = 100%      # 總是變異（無交叉）
+elite_size = population_size // 10  # 精英保留：保留前 10% (至少 1 個)
+max_evaluations = 500     # 最大評估次數（評估預算）
 ```
+
+
 
 #### DFA-GA 搜尋流程（標準代際替換）
 
@@ -202,16 +227,16 @@ mutation_rate = 100%      # 總是變異（無交叉）
 GA 主迴圈：
 │
 ├─ 初始化
-│  ├─ population = [initial_dfa]
-│  ├─ 評估 initial_dfa→得到 fitness
-│  ├─ all_history = [initial_dfa]
-│  └─ evaluations_count = 1
+│  ├─ population = [initial_dfa] × population_size（20 個副本）
+│  ├─ 評估所有初始個體→得到 fitness
+│  ├─ all_history = initial population
+│  └─ evaluations_count = population_size
 │
 └─ 世代迴圈（generation = 1, 2, 3, ...）
    │
    ├─ 邊界檢查
    │  └─ if evaluations_count >= max_evaluations:
-   │     → 停止進化，跳出迴圈
+   │     → break
    │
    ├─ 代際生成（生成 population_size 個後代）
    │  │
@@ -219,35 +244,36 @@ GA 主迴圈：
    │     │
    │     ├─ 邊界檢查（預算用盡時跳出內迴圈）
    │     │  └─ if evaluations_count >= max_evaluations:
-   │     │     → break 停止生成
+   │     │     → break
    │     │
    │     ├─ 選擇階段- 錦標賽選擇
-   │     │  ├─ 隨機選擇 tournament_size 個個體進行對比
+   │     │  ├─ 隨機選擇 tournament_size (=2) 個個體進行對比
    │     │  └─ parent = 適應度最高的個體
    │     │
    │     ├─ 變異階段- 生成鄰域
    │     │  ├─ candidates = _get_candidates(parent_dfa, state, generation, beam_size=1)
-   │     │  │  → propose_automata 生成 1 個變異候選
-   │     │  │  → 返回 [mutated_dfa]
-   │     │  │
-   │     │  └─ evaluations_count += len(candidates)
+   │     │  │  → propose_automata 生成 1 個變異候選 (DELETE/MERGE/DELTA)
+   │     │  └─ → 返回 [mutated_dfa]
    │     │
-   │     ├─ 評估候選
-   │     │  ├─ scored_candidates = _rank_candidates(candidates, training_data, ...)
-   │     │  └─ best_candidate = scored_candidates[0]（最高準確度）
-   │     │
-   │     ├─ 記錄並創建個體
-   │     │  ├─ _add_to_history(best_candidate, accuracy)
-   │     │  ├─ child = DEAP 個體
-   │     │  ├─ child.dfa = best_candidate.dfa
-   │     │  ├─ child.fitness.values = (accuracy,)
-   │     │  └─ offspring.append(child)
+   │     ├─ 候選選擇與評估（單一評估點）
+   │     │  ├─ chosen = candidates[0]（標準 GA：評估前選擇）
+   │     │  ├─ child = _create_individual(chosen)
+   │     │  ├─ child.fitness.values = toolbox.evaluate(child)  ← 唯一評估點
+   │     │  └─ evaluations_count += 1  ← 精確計數：1 次評估
    │     │
    │     └─ 下一個個體
    │
-   ├─ 代際替換（標準 GA 策略）
-   │  └─ population[:] = offspring
-   │     → 整個種群被新一代替代（不保留舊個體）
+   ├─ 精英保留（Elite Preservation Strategy）
+   │  ├─ elite_size = max(1, population_size // 10)  ← 保留前 10% (至少 1 個)
+   │  └─ elite = sorted(population, ...)[:elite_size]  ← 當前世代最優個體
+   │
+   ├─ 代際替換（包含精英）
+   │  ├─ population[:] = offspring + elite
+   │  │  → 新後代 + 上一代精英
+   │  │  → 保留最優解不被丟棄
+   │  │
+   │  └─ if len(population) > population_size:
+   │     → 按適應度排序，保留前 population_size 個
    │
    ├─ 統計和日誌
    │  ├─ best_accuracy_this_gen = max(fitness in population)
@@ -269,9 +295,13 @@ GA 主迴圈：
 |-----------|-----------|------|
 | 個體 | DFA | 每個 DFA 是一個個體 |
 | 適應度 | accuracy | 準確度越高，適應度越好 |
-| 選擇 | tournament selection | 選擇種群中準確度高的 DFA 作為親本 |
+| 初始化 | initial_dfa × population_size | 初始種群由多個初始 DFA 副本組成 |
+| 選擇 | tournament selection | 選擇種群中準確度高的 DFA 作為親本（每個後代獨立選擇） |
 | 交叉 | 不使用 | DFA 沒有清晰的交叉定義 |
-| 變異 | propose_automata | DELETE/MERGE/DELTA 操作作為變異 |
+| 變異 | propose_automata | DELETE/MERGE/DELTA 操作作為變異（每次 1 個操作） |
+| 評估 | toolbox.evaluate | 單一評估點，evaluations_count += 1 per child |
+| 精英保留 | elite strategy | 保留當代最優 10% 個體，防止最優解丟失 |
+| 代際替換 | offspring + elite | 新後代 + 精英個體組合，再按適應度排序保留 population_size 個 |
 | 停止條件 | max_evaluations | 評估 DFA 數達到預算 |
 
 #### 程式碼流程範例
@@ -287,12 +317,17 @@ result = ga_dfa_search(
 )
 ```
 
-關鍵特點:
-- 代際替換: 每代生成 population_size 個後代，然後整個替換舊種群（標準 GA 策略）
-- 無交叉: 只有選擇 + 變異，保持多樣性通過變異的隨機性
-- 固定種群大小: 每代始終保持 population_size 個個體
-- 全局歷史: 追蹤所有評估過的 DFA（用於最終選擇）
-- 預算感知: 在生成後代迴圈中檢查 evaluations_count，預算用盡時立即停止
+**關鍵特點：**
+- **評估計數**：每個後代恰好評估 1 次（無重複計數）
+  - 初始化：evaluations_count = population_size
+  - 每代：evaluations_count += population_size（each child counted once）
+- **代際替換**：每代生成 population_size 個後代
+- **精英保留**：保留前一代最優 10% 個體，防止最優解丟失
+- **無交叉**：只有選擇 + 變異，保持多樣性通過變異的隨機性
+- **固定種群大小**：每代始終保持 population_size 個個體
+- **單一評估點**：候選選擇後直接評估，無預排序
+- **全局歷史**：追蹤所有評估過的 DFA（用於最終選擇）
+- **預算感知**：在生成後代迴圈中檢查 evaluations_count，預算用盡時立即停止
 
 ---
 
@@ -306,7 +341,7 @@ result = ga_dfa_search(
    a) 評估每個粒子的 fitness (accuracy)
    b) 更新「每個粒子的過去最優 pbest」
    c) 更新「全局最優粒子 gbest」
-   d) 更新速度：v = w×v + c1×rand()×(pbest - x) + c2×rand()×(gbest - x)
+   d) 更新速度：v = w×v + c1×rand()×(pbest - x) + c2×rand()×(gbest - x) (標準公式))
    e) 更新位置：x = x + v
    每輪粒子會計算一個移動向量，試圖往 pbest 和 gbest 的中間地帶靠攏
 3. 返回 gbest（全局最優解）
@@ -316,6 +351,8 @@ result = ga_dfa_search(
 - `w` (慣性權重): 控制速度的動量
 - `c1` (認知係數): 粒子向其過去最優靠近的傾向
 - `c2` (社交係數): 粒子向全局最優靠近的傾向
+- n_particles: int = 10  # 粒子數
+
 
 ### map 到 DFA 
 
@@ -325,12 +362,10 @@ result = ga_dfa_search(
    - 每個粒子對應一個目前的候選 DFA，以及其在操作空間中的位置、速度與歷史最佳資訊
 
 - `position` : (operation_type, selector, prob) 
-   - 表示一組對 DFA 的修改操作參數
+   - 表示一組對 DFA 的修改操作參數，經過 mapping (執行修改操作) → 變 DFA
    - `operation_type` ∈ {DELETE, MERGE, DELTA}
-   - `selector` ∈ [0, k]，從候選修改中選擇哪 k 個，其中 k 同步 beam_size
+   - `selector` ∈ [0, k]，從修改的候選中選擇哪 k 個，其中 k 同步 beam_size
    - `prob` ∈ [0,1]，此操作被執行的機率
-
-   position → 經過 mapping (將執行步驟套到 DFA 上) → DFA
 
 - `velocity` : 表示修改操作偏好的變化方向
    - 公式不變：`v = wv + c1(pbest - x) + c2(gbest - x)`
@@ -342,7 +377,7 @@ result = ga_dfa_search(
 
 **Mapping 流程**（_map_position_to_dfa）
 
-1. 將粒子的 position 解碼為一組 DFA refinement 操作
+1. 粒子的 position 表示一組 DFA refinement 操作
 2. 將這些操作套用到目前 DFA，得到新的候選 DFA
 3. 計算此 DFA 的 fitness
 4. 根據 fitness 更新 pbest 與 gbest
@@ -372,7 +407,7 @@ PSOAutomataOptimizer.optimize() 主迴圈：
    │  │
    │  ├─ 限制檢查
    │  │  └─ if evaluations_count >= max_evaluations:
-   │  │     → 拋出 RuntimeError 停止最佳化
+   │  │     → break
    │  │
    │  ├─ 位置→操作映射　_map_position_to_dfa(particle_id, position) 
    │  │  │
@@ -388,18 +423,11 @@ PSOAutomataOptimizer.optimize() 主迴圈：
    │  │  │ 
    │  │  └─ 返回 modified_dfa（累積執行後的結果） 
    │  │
-   │  ├─ 清理　remove_unreachable_states(dfa)
-   │  │  → 刪除無法從初始狀態到達的狀態
-   │  │
    │  ├─ 評估　_evaluate_and_cache(dfa)
    │  │  ├─ accuracy = _compute_accuracy(dfa, training_data)
    │  │  ├─ loss = _compute_loss(accuracy, num_states)
    │  │  ├─ val_acc = _compute_accuracy(dfa, validation_data)
    │  │  └─ evaluations_count += 1
-   │  │
-   │  ├─ 追蹤
-   │  │  ├─ _add_to_history(dfa, accuracy, val_acc)
-   │  │  └─ losses[particle_id] = loss
    │  │
    │  └─ 更新 gbest
    │     └─ if loss < gbest_fitness: gbest_dfa = dfa, ...
@@ -410,9 +438,6 @@ PSOAutomataOptimizer.optimize() 主迴圈：
    │  │            + c2×rand()×(gbest - position[i])
    │  │
    │  └─ position[i] += velocity[i]
-   │
-   ├─ 進度日誌
-   │  └─ print(f"Iteration {iteration}: best loss = {min(losses)}")
    │
    └─ 下一個迭代或停止
       └─ 如果 iteration >= n_iterations 或預算用盡 → 停止
@@ -460,12 +485,6 @@ optimizer = PSOAutomataOptimizer(
 result = optimizer.optimize(n_particles=10, n_iterations=30, save_trajectory=True)
 ```
 
-關鍵特點:
-- 離散化映射: 連續位置向量→離散 DFA 操作
-- 預算感知: 在最佳化目標函數中檢查預算
-- 狀態清理: 每次生成新 DFA 後移除無法到達的狀態
-- 歷史追蹤: 全局歷史用於最終選擇
-
 ---
 
 ## 三者對比
@@ -485,10 +504,11 @@ result = optimizer.optimize(n_particles=10, n_iterations=30, save_trajectory=Tru
 
 | 方面 | SA | GA | PSO |
 |-------------|-------------|-----------------|----------|
-| DFA 修改方式 | 單個→單個（逐步修改） | 種群→後代種群（代際替換） | 連續向量→DFA（映射） |
-| 候選生成 | beam_size=1 | 每代生成 population_size 個後代 | 根據位置向量生成 |
-| 全局最優追蹤 | best_dfa（顯式） | all_history + best_in_population（隱式）| gbest_dfa（顯式） |
-| 適應度評估 | Energy：-accuracy | Fitness：accuracy | Loss：基於準確度+狀態數 |
+| DFA 修改方式 | 單個→單個（逐步修改） | 種群→後代種群（代際替換+精英保留） | 連續向量→DFA（映射） |
+| 候選生成 | beam_size=1，純隨機選擇 | 每代生成 population_size 個後代，無預排序 | 根據位置向量生成 |
+| 全局最優追蹤 | best_dfa（顯式） | all_history + best_in_population（隱式），精英自動保留 | gbest_dfa（顯式） |
+| 評估計數 | evaluations_count += 1 per move | evaluations_count = pop_size (init) + 1 per child | evaluations_count += 1 per evaluation |
+| 多樣性保留 | 溫度機制允許壞解 | 變異+精英保留（防止收斂過早） | 速度向量+全局歷史 |
 | 停止機制 | 溫度+預算 | 預算 | 迭代+預算 |
 
 ### 效能特徵
