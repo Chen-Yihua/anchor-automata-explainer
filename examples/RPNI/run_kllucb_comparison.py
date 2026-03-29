@@ -49,9 +49,28 @@ from tee import Tee
 
 
 # ======================================================================
+# Helper function to safely convert values to scalar
+# ======================================================================
+def to_scalar(value):
+    """Convert value to scalar, handling lists, arrays, and other types."""
+    if value is None:
+        return 0
+    # If it's a list or array, take the first element
+    if isinstance(value, (list, tuple)):
+        return value[0] if value else 0
+    # If it's a numpy array, convert to Python scalar
+    if isinstance(value, np.ndarray):
+        return value.item()
+    # Otherwise return as-is
+    return value
+
+
+# ======================================================================
 # Shared initialization container
 # ======================================================================
-PrebuiltInit = namedtuple('PrebuiltInit', ['learner', 'data', 'labels', 'initial_dfa'])
+# Contains: learner, initial_dfa (shared), validation_data/labels (for selection)
+# Training data is NOT included — anchor_beam will resample it independently
+PrebuiltInit = namedtuple('PrebuiltInit', ['learner', 'initial_dfa', 'validation_data', 'validation_labels'])
 
 
 # ======================================================================
@@ -66,8 +85,8 @@ def get_languages_config(accuracy_threshold):
             accuracy_threshold = accuracy_threshold,
             state_threshold = 10,
             delta           = 0.01,
-            tau             = 0.05,
-            batch_size      = 2000,
+            tau             = 0.1,
+            batch_size      = 1000,
             beam_size       = 1,
             init_num_samples= 2000,
             edit_distance   = 4,
@@ -76,13 +95,13 @@ def get_languages_config(accuracy_threshold):
             num_layers      = 1,  dropout = 0,
         ),
         "L4": dict(
-            test_instance   = ['a', 'a', 'b', 'b', 'c', 'd'] ,
+            test_instance   = ['a', 'a', 'b', 'b', 'c', 'd', 'c'] ,
             alphabet        = ['a', 'b', 'c', 'd'],
             accuracy_threshold = accuracy_threshold,
             state_threshold = 5,
             delta           = 0.01,
-            tau             = 0.05,
-            batch_size      = 500,
+            tau             = 0.1,
+            batch_size      = 1000,
             beam_size       = 1,
             init_num_samples= 2000,
             edit_distance   = 5,
@@ -91,13 +110,13 @@ def get_languages_config(accuracy_threshold):
             num_layers      = 2,  dropout = 0.5,
         ),
         "L6": dict(
-            test_instance   = ['a', 'a', 'a', 'c', 'a', 'a', 'b', 'b'],
+            test_instance   = ['a', 'a', 'a', 'c', 'a', 'a'],
             alphabet        = ['a', 'b', 'c', 'd'],
             accuracy_threshold = accuracy_threshold,
             state_threshold = 5,
             delta           = 0.01,
-            tau             = 0.05,
-            batch_size      = 500,
+            tau             = 0.1,
+            batch_size      = 1000,
             beam_size       = 1,
             init_num_samples= 2000,
             edit_distance   = 3,
@@ -111,10 +130,10 @@ def get_languages_config(accuracy_threshold):
             accuracy_threshold = accuracy_threshold,
             state_threshold = 5,
             delta           = 0.01,
-            tau             = 0.05,
-            batch_size      = 500,
+            tau             = 0.1,
+            batch_size      = 1000,
             beam_size       = 1,
-            init_num_samples= 2000,
+            init_num_samples= 1000,
             edit_distance   = 5,
             select_by       = 'accuracy',
             max_length      = 10, embedding_dim = 16, hidden_dim = 32,
@@ -126,10 +145,10 @@ def get_languages_config(accuracy_threshold):
             accuracy_threshold = accuracy_threshold,
             state_threshold = 5,
             delta           = 0.01,
-            tau             = 0.05,
-            batch_size      = 2000,
+            tau             = 0.1,
+            batch_size      = 1000,
             beam_size       = 1,
-            init_num_samples= 1000,
+            init_num_samples= 800,
             edit_distance   = 10,
             select_by       = 'accuracy',
             max_length      = 20, embedding_dim = 64, hidden_dim = 256,
@@ -242,12 +261,13 @@ def run_one_language(lang_code: str, cfg: dict, output_root: str) -> dict | None
     print("  Extracting shared initialization...")
     sys.stdout.flush()
     
-    initial_state = getattr(beam_with_kllucb, 'initial_state')
-    initial_train = getattr(beam_with_kllucb, 'initial_training_accuracy')
-    initial_validation = getattr(beam_with_kllucb, 'initial_validation_accuracy')
-    final_train  = getattr(beam_with_kllucb, 'final_training_accuracy')
-    final_validation = getattr(beam_with_kllucb, 'final_validation_accuracy')
-    final_state = getattr(beam_with_kllucb, 'final_state')
+    # Convert all values to scalar (handles lists, arrays, and numpy types)
+    initial_state = int(to_scalar(getattr(beam_with_kllucb, 'initial_state')))
+    initial_train = float(to_scalar(getattr(beam_with_kllucb, 'initial_training_accuracy')))
+    initial_validation = float(to_scalar(getattr(beam_with_kllucb, 'initial_validation_accuracy')))
+    final_train  = float(to_scalar(getattr(beam_with_kllucb, 'final_training_accuracy')))
+    final_validation = float(to_scalar(getattr(beam_with_kllucb, 'final_validation_accuracy')))
+    final_state = int(to_scalar(getattr(beam_with_kllucb, 'final_state')))
     budget_used = getattr(beam_with_kllucb, 'budget_used', None)
     success = getattr(beam_with_kllucb, 'success', False)
     mab = getattr(explainer, 'mab', None)
@@ -266,16 +286,16 @@ def run_one_language(lang_code: str, cfg: dict, output_root: str) -> dict | None
     # Create PrebuiltInit for sharing with second method
     prebuilt = PrebuiltInit(
         learner=learner_instance,
-        data=validation_data,
-        labels=validation_labels,
-        initial_dfa=initial_dfa
+        initial_dfa=initial_dfa,
+        validation_data=validation_data,
+        validation_labels=validation_labels
     )
     sys.stdout.flush()
 
     results['with_kllucb'] = {
         'initial_state': initial_state,
         'initial_training_accuracy': initial_train,
-        'final_validation_accuracy': initial_validation,
+        'initial_validation_accuracy': initial_validation,
         'shared_init_used': True,  # Mark that shared initialization was used
         'final_state': final_state,
         'final_training_accuracy': final_train,
@@ -338,23 +358,24 @@ def run_one_language(lang_code: str, cfg: dict, output_root: str) -> dict | None
     init_time_no = getattr(beam_no_kllucb, 'init_automaton_time', 0.0)
     beam_time_no = max(0.0, time_no_kllucb - init_time_no)
 
-    initial_state = getattr(beam_no_kllucb, 'initial_state')
-    initial_train = getattr(beam_no_kllucb, 'initial_training_accuracy')
-    initial_validation = getattr(beam_no_kllucb, 'initial_validation_accuracy')
-    final_train  = getattr(beam_no_kllucb, 'final_training_accuracy')
-    final_validation = getattr(beam_no_kllucb, 'final_validation_accuracy')
-    final_state = getattr(beam_no_kllucb, 'final_state')
+    # Convert all values to scalar (handles lists, arrays, and numpy types)
+    initial_state_no = int(to_scalar(getattr(beam_no_kllucb, 'initial_state')))
+    initial_train_no = float(to_scalar(getattr(beam_no_kllucb, 'initial_training_accuracy')))
+    initial_validation_no = float(to_scalar(getattr(beam_no_kllucb, 'initial_validation_accuracy')))
+    final_train_no  = float(to_scalar(getattr(beam_no_kllucb, 'final_training_accuracy')))
+    final_validation_no = float(to_scalar(getattr(beam_no_kllucb, 'final_validation_accuracy')))
+    final_state_no = int(to_scalar(getattr(beam_no_kllucb, 'final_state')))
     budget_used = getattr(beam_no_kllucb, 'budget_used', None)
     success = getattr(beam_no_kllucb, 'success', False)
 
     results['no_kllucb'] = {
-        'initial_state': initial_state,  # Same for both methods
-        'initial_training_accuracy': initial_train,
-        'final_validation_accuracy': initial_validation,
+        'initial_state': initial_state_no,  # Same for both methods
+        'initial_training_accuracy': initial_train_no,
+        'initial_validation_accuracy': initial_validation_no,
         'shared_init_used': True,
-        'final_state': final_state,
-        'final_training_accuracy': final_train,
-        'final_validation_accuracy': final_validation,
+        'final_state': final_state_no,
+        'final_training_accuracy': final_train_no,
+        'final_validation_accuracy': final_validation_no,
         'time_total': time_no_kllucb,
         'init_time': init_time_no,
         'beam_time': beam_time_no,
@@ -366,43 +387,6 @@ def run_one_language(lang_code: str, cfg: dict, output_root: str) -> dict | None
           f"states={results['no_kllucb']['final_state']}, "
           f"beam_time={beam_time_no:.1f}s")
 
-    # ─────────────────────────────────────────────────────────────────
-    # STEP 3: Comparison & Analysis
-    # ─────────────────────────────────────────────────────────────────
-    print("\n" + "─"*80)
-    print(f"  COMPARISON for {lang_code} (starting from SAME shared initial automaton):")
-    print("─"*80)
-    
-    print(f"\n  Initial Automaton (RPNI baseline - SHARED by both methods):")
-    print(f"    States:       {initial_state}")
-    print(f"    Train Acc:    {initial_train:.4f}")
-    
-    acc_with = results['with_kllucb']['final_training_accuracy']
-    acc_no = results['no_kllucb']['final_training_accuracy']
-    state_with = results['with_kllucb']['final_state']
-    state_no = results['no_kllucb']['final_state']
-    time_with = results['with_kllucb']['beam_time']
-    time_no = results['no_kllucb']['beam_time']
-
-    print(f"\n  Final Training Accuracy:")
-    print(f"    WITH KL-LUCB: {acc_with:.4f} (Δ {acc_with - initial_train:+.4f})")
-    print(f"    NO KL-LUCB:   {acc_no:.4f} (Δ {acc_no - initial_train:+.4f})")
-    print(f"    Difference:   {abs(acc_with - acc_no):.4f} {'✓ Similar' if abs(acc_with - acc_no) < 0.01 else '✗ Different'}")
-
-    print(f"\n  Final State Count:")
-    print(f"    WITH KL-LUCB: {state_with} (Δ {state_with - initial_state:+d})")
-    print(f"    NO KL-LUCB:   {state_no} (Δ {state_no - initial_state:+d})")
-    print(f"    Difference:   {abs(state_with - state_no)} {'✓ Same' if abs(state_with - state_no) == 0 else '✗ Different'}")
-
-    print(f"\n  Beam Search Time (excluding RPNI):")
-    print(f"    WITH KL-LUCB: {time_with:.2f}s")
-    print(f"    NO KL-LUCB:   {time_no:.2f}s")
-    print(f"    Speedup:      {time_with/max(time_no, 0.01):.2f}x {'(KL-LUCB slower - uses statistical testing)' if time_with > time_no else '(No KL-LUCB faster - simpler)' }")
-
-    print(f"\n  Validation Accuracy:")
-    print(f"    WITH KL-LUCB: {results['with_kllucb']['final_validation_accuracy']:.4f}")
-    print(f"    NO KL-LUCB:   {results['no_kllucb']['final_validation_accuracy']:.4f}")
-
     return results
 
 
@@ -411,12 +395,15 @@ def run_one_language(lang_code: str, cfg: dict, output_root: str) -> dict | None
 # ======================================================================
 def print_summary_report(all_results: dict, accuracy_threshold: float) -> None:
     """Print summary comparison across all languages."""
-    print(f"\n\n{'='*80}")
+    print(f"\n\n{'='*145}")
     print(f"  SUMMARY: KL-LUCB Comparison (accuracy_threshold={accuracy_threshold})")
-    print(f"{'='*80}\n")
+    print(f"{'='*145}\n")
 
-    print(f"{'Language':<12} {'Metric':<20} {'Initial':<12} {'WITH KL':<12} {'WITHOUT KL':<12}")
-    print("─" * 80)
+    # Header row
+    col_width = 15
+    print(f"{'Language':<12} {'Method':<18} {'Init Train':<12} {'Final Train':<12} {'Δ Train':<12} "
+          f"{'Init Val':<12} {'Final Val':<12} {'Δ Val':<12} {'Init States':<12} {'Final States':<12} {'Δ States':<12} {'Time(s)':<12}")
+    print("─" * 145)
 
     for lang_code, results in sorted(all_results.items()):
         if results is None:
@@ -424,33 +411,39 @@ def print_summary_report(all_results: dict, accuracy_threshold: float) -> None:
 
         with_r = results['with_kllucb']
         no_r = results['no_kllucb']
-        init_state = with_r['initial_state']
-        init_acc = with_r['initial_training_accuracy']
+        
+        # Extract all values and convert to scalar (handles lists, arrays, and numpy types)
+        init_state = int(to_scalar(with_r.get('initial_state', 0)))
+        init_train_acc = float(to_scalar(with_r.get('initial_training_accuracy', 0.0)))
+        init_val_acc = float(to_scalar(with_r.get('initial_validation_accuracy', 0.0)))
+        
+        final_train_with = float(to_scalar(with_r.get('final_training_accuracy', 0.0)))
+        final_train_no = float(to_scalar(no_r.get('final_training_accuracy', 0.0)))
+        delta_train_with = final_train_with - init_train_acc
+        delta_train_no = final_train_no - init_train_acc
+        
+        final_val_with = float(to_scalar(with_r.get('final_validation_accuracy', 0.0)))
+        final_val_no = float(to_scalar(no_r.get('final_validation_accuracy', 0.0)))
+        delta_val_with = final_val_with - init_val_acc
+        delta_val_no = final_val_no - init_val_acc
+        
+        final_state_with = int(to_scalar(with_r.get('final_state', 0)))
+        final_state_no = int(to_scalar(no_r.get('final_state', 0)))
+        delta_state_with = final_state_with - init_state
+        delta_state_no = final_state_no - init_state
+        
+        time_with = float(to_scalar(with_r.get('beam_time', 0.0)))
+        time_no = float(to_scalar(no_r.get('beam_time', 0.0)))
 
-        # Row 1: Final Accuracy
-        print(f"{lang_code:<12} {'Final Train Acc':<20} {init_acc:<12.4f} "
-              f"{with_r['final_training_accuracy']:<12.4f} {no_r['final_training_accuracy']:<12.4f}")
+        # WITH KL-LUCB row
+        print(f"{lang_code:<12} {'WITH KL-LUCB':<18} {init_train_acc:<12.4f} {final_train_with:<12.4f} {delta_train_with:+12.4f} "
+              f"{init_val_acc:<12.4f} {final_val_with:<12.4f} {delta_val_with:+12.4f} {init_state:<12d} {final_state_with:<12d} {delta_state_with:+12d} {time_with:<12.2f}")
 
-        # Row 2: Final States
-        print(f"{'':<12} {'Final States':<20} {init_state:<12} "
-              f"{with_r['final_state']:<12} {no_r['final_state']:<12}")
+        # WITHOUT KL-LUCB row
+        print(f"{'':<12} {'WITHOUT KL-LUCB':<18} {init_train_acc:<12.4f} {final_train_no:<12.4f} {delta_train_no:+12.4f} "
+              f"{init_val_acc:<12.4f} {final_val_no:<12.4f} {delta_val_no:+12.4f} {init_state:<12d} {final_state_no:<12d} {delta_state_no:+12d} {time_no:<12.2f}")
 
-        # Row 3: Beam Time
-        print(f"{'':<12} {'Beam Time (s)':<20} {'-':<12} "
-              f"{with_r['beam_time']:<12.2f} {no_r['beam_time']:<12.2f}")
-
-        # Row 4: Validation Acc
-        print(f"{'':<12} {'Validation Acc':<20} {'-':<12} "
-              f"{with_r['final_validation_accuracy']:<12.4f} {no_r['final_validation_accuracy']:<12.4f}")
-
-        print("─" * 80)
-
-    print("\nConclusion:")
-    print("  • Shared initial automaton (via prebuilt_init) eliminates initialization variance")
-    print("  • Differences in final results are purely due to Beam Search strategy, not RPNI randomness")
-    print("  • If final results are similar → KL-LUCB overhead may not be justified")
-    print("  • If WITH KL-LUCB achieves higher accuracy → statistical testing is beneficial")
-    print("  • If WITHOUT KL-LUCB is much faster → consider simpler greedy selection")
+        print("─" * 145)
 
 
 # ======================================================================
@@ -458,10 +451,14 @@ def print_summary_report(all_results: dict, accuracy_threshold: float) -> None:
 # ======================================================================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compare beam search WITH and WITHOUT KL-LUCB")
-    parser.add_argument("--accuracy_threshold", type=float, default=0.9,
-                        help="Accuracy threshold for all languages (default: 0.9)")
+    parser.add_argument("--accuracy_threshold", type=float, default=0.8,
+                        help="Accuracy threshold for all languages (default: 0.8)")
     parser.add_argument("--languages", type=str, default="L3AB,L4,L6,L7,mnist",
                         help="Comma-separated list of languages to run (default: L3AB,L4,L6,L7,mnist)")
+    parser.add_argument("--batch_size", type=int, default=None,
+                        help="(optional) Override per-language batch_size for quick tests")
+    parser.add_argument("--init_num_samples", type=int, default=None,
+                        help="(optional) Override per-language init_num_samples for quick tests")
     args = parser.parse_args()
 
     accuracy_threshold = args.accuracy_threshold
@@ -484,6 +481,13 @@ if __name__ == "__main__":
         all_results = {}
         
         cfg_dict = get_languages_config(accuracy_threshold)
+        # Optionally override per-language batch_size / init_num_samples for quick testing
+        if args.batch_size is not None or args.init_num_samples is not None:
+            for lc, cfg in cfg_dict.items():
+                if args.batch_size is not None:
+                    cfg['batch_size'] = args.batch_size
+                if args.init_num_samples is not None:
+                    cfg['init_num_samples'] = args.init_num_samples
         for lang_code in languages_to_run:
             if lang_code not in cfg_dict:
                 print(f"\n[SKIP] Unknown language: {lang_code}")
@@ -511,11 +515,33 @@ if __name__ == "__main__":
         print_summary_report(all_results, accuracy_threshold)
         sys.stdout.flush()
 
-        # Save detailed results to pickle
-        results_path = os.path.join(output_root, "kllucb_comparison_results.pkl")
-        with open(results_path, 'wb') as f:
-            pickle.dump(all_results, f)
-        print(f"\nDetailed results saved to: {results_path}")
+        # Print detailed results at the end
+        print("\n\n" + "="*95)
+        print(f"  DETAILED RESULTS")
+        print("="*95)
+        
+        for lang_code, results in sorted(all_results.items()):
+            if results is None:
+                print(f"\n[{lang_code}] SKIPPED (failed or not found)")
+                continue
+            
+            with_r = results['with_kllucb']
+            no_r = results['no_kllucb']
+            
+            print(f"\n[{lang_code}]")
+            print(f"  WITH KL-LUCB:")
+            print(f"    Initial: {int(to_scalar(with_r.get('initial_state', 0)))} states, {float(to_scalar(with_r.get('initial_training_accuracy', 0.0))):.4f} train acc, {float(to_scalar(with_r.get('initial_validation_accuracy', 0.0))):.4f} val acc")
+            print(f"    Final:   {int(to_scalar(with_r.get('final_state', 0)))} states, {float(to_scalar(with_r.get('final_training_accuracy', 0.0))):.4f} train acc, {float(to_scalar(with_r.get('final_validation_accuracy', 0.0))):.4f} val acc")
+            print(f"    Time:    {float(to_scalar(with_r.get('beam_time', 0.0))):.2f}s")
+            print(f"    Success: {with_r.get('success', False)}")
+            
+            print(f"  WITHOUT KL-LUCB:")
+            print(f"    Initial: {int(to_scalar(no_r.get('initial_state', 0)))} states, {float(to_scalar(no_r.get('initial_training_accuracy', 0.0))):.4f} train acc, {float(to_scalar(no_r.get('initial_validation_accuracy', 0.0))):.4f} val acc")
+            print(f"    Final:   {int(to_scalar(no_r.get('final_state', 0)))} states, {float(to_scalar(no_r.get('final_training_accuracy', 0.0))):.4f} train acc, {float(to_scalar(no_r.get('final_validation_accuracy', 0.0))):.4f} val acc")
+            print(f"    Time:    {float(to_scalar(no_r.get('beam_time', 0.0))):.2f}s")
+            print(f"    Success: {no_r.get('success', False)}")
+        
+        print("\n" + "="*95)
         print(f"Main log saved to: {log_path}")
         sys.stdout.flush()
 
