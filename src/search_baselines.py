@@ -2,15 +2,18 @@
 DFA Search Baselines: SA, GA, PSO
 
 Each baseline follows the same pipeline as the main anchor-based system:
-  1. Same perturbation samples + RPNI initial DFA
-  2. Same propose_automata() for candidate generation (DELETE / MERGE / DELTA)
-  3. Same training-accuracy scoring
-  4. Same final-selection logic as anchor_base.anchor_beam()
+    1. Same perturbation samples + RPNI initial DFA
+    2. Same propose_automata() for candidate generation (DELETE / MERGE / DELTA)
+    3. Same training-accuracy scoring
+    4. Same final-selection logic as anchor_base.anchor_beam()
+
+See also: PSO_SA_GA_process.md in project root for a detailed mapping
+between theoretical SA/GA/PSO concepts and their DFA adaptations.
 
 Libraries:
-  from deap import base, creator, tools
-  from simanneal import Annealer
-  from pyswarms.single.global_best import GlobalBestPSO
+    from deap import base, creator, tools
+    from simanneal import Annealer
+    from pyswarms.single.global_best import GlobalBestPSO
 """
 
 from __future__ import annotations
@@ -24,6 +27,8 @@ from typing import Callable, List, NamedTuple, Tuple
 
 import numpy as np
 from deap import base, creator, tools
+from multiprocessing.dummy import Pool as ThreadPool
+import multiprocessing
 from simanneal import Annealer
 from pyswarms.single.global_best import GlobalBestPSO
 
@@ -62,16 +67,6 @@ class SharedInit(NamedTuple):
 # Shared helpers
 # ======================================================================
 
-def _compute_accuracy(dfa, data: list, labels: np.ndarray) -> float:
-    """Training accuracy of *dfa* on the labelled data."""
-    if len(data) == 0:
-        return 0.0
-    accepts = np.array([_AUTO_INSTANCE.check_path_accepted(dfa, p) for p in data])
-    lbl = np.asarray(labels)
-    correct = int(np.sum((lbl == 1) & accepts) + np.sum((lbl == 0) & ~accepts))
-    return correct / len(lbl)
-
-
 def _rank_candidates(candidates: list, training_data: list, training_labels: np.ndarray,
                     validation_data: list, validation_labels: np.ndarray) -> list:
     """
@@ -83,8 +78,8 @@ def _rank_candidates(candidates: list, training_data: list, training_labels: np.
     """
     scored = []
     for dfa in candidates:
-        train_acc = _compute_accuracy(dfa, training_data, training_labels)
-        val_acc = _compute_accuracy(dfa, validation_data, validation_labels)
+        train_acc = _AUTO_INSTANCE.compute_accuracy(dfa, training_data, training_labels)
+        val_acc = _AUTO_INSTANCE.compute_accuracy(dfa, validation_data, validation_labels)
         scored.append({
             'dfa': dfa,
             'training_accuracy': train_acc,
@@ -95,31 +90,6 @@ def _rank_candidates(candidates: list, training_data: list, training_labels: np.
     # Sort by training accuracy descending (best first)
     scored.sort(key=lambda x: x['training_accuracy'], reverse=True)
     return scored
-
-
-def _is_valid_dfa(dfa) -> bool:
-    """True if *dfa* has >= 2 states and at least one accepting state."""
-    if not hasattr(dfa, 'states'):
-        return False
-    states = list(dfa.states)
-    return len(states) >= 2 and any(s.is_accepting for s in states)
-
-
-def _add_to_history(all_history: list, seen_ids: set, dfa, training_accuracy: float,
-                    validation_accuracy: float = None) -> None:
-    """Append a valid, not-yet-seen DFA to *all_history*."""
-    dfa_id = id(dfa)
-    if dfa_id in seen_ids:
-        return
-    if not _is_valid_dfa(dfa):
-        return
-    seen_ids.add(dfa_id)
-    all_history.append({
-        "automata": dfa,
-        "training_accuracy": training_accuracy,
-        "validation_accuracy": validation_accuracy,
-        "states": len(dfa.states),
-    })
 
 
 def _get_candidates(dfa, state: dict, iteration: int, output_dir: str,
@@ -360,12 +330,11 @@ class DFAAnnealer(Annealer):
     
     def move(self):
         """
-        Generate a single neighbor DFA via propose_automata.
+        Generate a single random neighbor DFA by randomly selecting one operation
+        (DELETE, MERGE, or DELTA) and calling the corresponding learner method.
         
-        simanneal's Annealer handles Metropolis criterion:
-        - Accepts if new_energy < current_energy
-        - Accepts with prob exp(-dE/T) otherwise
-        - Reverts if rejected
+        This implements standard SA: pure random neighbor generation with
+        Metropolis criterion handled by simanneal.
         
         Stops immediately when evaluations_count >= max_evaluations.
         """
@@ -387,54 +356,60 @@ class DFAAnnealer(Annealer):
             self._initialized = True
             return  # Return None on first initialization (simanneal handles it)
         
-        # Generate a SINGLE neighbor candidate (standard SA: one neighbor move)
-        candidates = _get_candidates(
-            self.current_dfa, self.propose_state, self.iteration_count,
-            self.output_dir, beam_size=1  # ← Generate only 1 candidate
-        )
-        self.evaluations_count += len(candidates)
+        # === PURE RANDOM NEIGHBOR GENERATION ===
+        # Use single-neighbor method: no waste, exactly 1 candidate per move
+        try:
+            candidate = _AUTO_INSTANCE._propose_single_neighbor(
+                self.current_dfa, self.propose_state, self.training_data, self.training_labels, set()
+            )
+        except Exception as e:
+            print(f"  [SA] Error generating neighbor: {e}")
+            candidate = None
         
-        if candidates:
-            # Randomly select from candidates (or just use the single one)
-            candidate = random.choice(candidates) if len(candidates) > 1 else candidates[0]
+        # If we successfully generated a candidate, process it
+        if candidate is not None:
+            # ← CRITICAL: Increment by 1 (we evaluated exactly 1 neighbor, generated no waste)
+            self.evaluations_count += 1
+            
+            # Compute candidate accuracies (once) and track in history
+            candidate_train_acc = _AUTO_INSTANCE.compute_accuracy(candidate, self.training_data, self.training_labels)
+            candidate_val_acc = _AUTO_INSTANCE.compute_accuracy(candidate, self.validation_data, self.validation_labels)
 
-            # Compute candidate accuracy (for logging/history)
-            candidate_acc = _compute_accuracy(candidate, self.training_data, self.training_labels)
-
-            # Track in history
-            _add_to_history(
+            _AUTO_INSTANCE.add_to_history(
                 self.all_history, self.seen_ids,
-                candidate, candidate_acc,
-                _compute_accuracy(candidate, self.validation_data, self.validation_labels)
+                candidate, candidate_train_acc,
+                candidate_val_acc,
+                use_automata_key=True
             )
 
             # Update Annealer state to the candidate so simanneal can evaluate energy() and revert if needed
-            # simanneal uses self.state for its internal bookkeeping so we must assign there.
             try:
                 self.state = candidate
             except Exception:
-                # Fallback: keep a separate reference but energy() will rely on self.state
                 self.state = candidate
 
-            # Also keep current_dfa reference in this wrapper for debugging/printing convenience
+            # Keep current_dfa reference
             self.current_dfa = candidate
 
             # Update best (track best seen so far)
-            current_best_acc = _compute_accuracy(self.best_dfa, self.training_data, self.training_labels)
-            if candidate_acc > current_best_acc:
+            current_best_acc = _AUTO_INSTANCE.compute_accuracy(self.best_dfa, self.training_data, self.training_labels)
+            if candidate_train_acc > current_best_acc:
                 self.best_dfa = copy.deepcopy(candidate)
-                print(f"  [SA-iter{self.iteration_count}] NEW best: acc={candidate_acc:.4f}, states={len(candidate.states)}, evals: {self.evaluations_count}/{self.max_evaluations}")
+                print(f"  [SA-iter{self.iteration_count}] NEW best: acc={candidate_train_acc:.4f}, states={len(candidate.states)}, evals: {self.evaluations_count}/{self.max_evaluations}")
             
-            # Early stopping: if we reach 2 states, stop the search
+            # Early stopping: if we reach 2 states, stop
             if len(candidate.states) == 2:
                 print(f"  [SA] Early stopping: reached 2 states at iteration {self.iteration_count}")
                 self.user_exit = True
+        else:
+            # No candidate generated
+            print(f"  [SA-iter{self.iteration_count}] Neighbor generation failed, skipping move")
     
     def energy(self):
         """Return negative accuracy (we minimize energy)."""
         # Use simanneal's canonical state (`self.state`) for energy calculation so revert works correctly
         dfa_to_eval = getattr(self, 'state', None) or self.current_dfa
-        acc = _compute_accuracy(dfa_to_eval, self.training_data, self.training_labels)
+        acc = _AUTO_INSTANCE.compute_accuracy(dfa_to_eval, self.training_data, self.training_labels)
         return -acc  # Negative because Annealer minimizes energy
 
 
@@ -497,9 +472,9 @@ def sa_dfa_search(sampler_fn: Callable,
     
     # Prepare all_history with collected candidates
     all_history = annealer.all_history
-    initial_train_acc = _compute_accuracy(initial_dfa, training_data, training_labels)
-    initial_val_acc = _compute_accuracy(initial_dfa, validation_data, validation_labels)
-    _add_to_history(all_history, annealer.seen_ids, initial_dfa, initial_train_acc, initial_val_acc)
+    initial_train_acc = _AUTO_INSTANCE.compute_accuracy(initial_dfa, training_data, training_labels)
+    initial_val_acc = _AUTO_INSTANCE.compute_accuracy(initial_dfa, validation_data, validation_labels)
+    _AUTO_INSTANCE.add_to_history(all_history, annealer.seen_ids, initial_dfa, initial_train_acc, initial_val_acc, use_automata_key=True)
     
     print(f"[SA] Completed {annealer.evaluations_count} evaluations")
     print(f"[SA] Best DFA state: {len(best_dfa.states)}")
@@ -539,9 +514,9 @@ def ga_dfa_search(sampler_fn: Callable,
                   batch_size: int = 100,
                   output_dir: str = "test_result/ga",
                   beam_size: int = 1,
-                  population_size: int = 20,
+                  population_size: int = 50,
                   tournament_size: int = 2,
-                  max_evaluations: int = 500,
+                  max_evaluations: int = 3000,
                   **kwargs) -> dict:
     """
     Standard Genetic Algorithm for DFA search (no crossover, mutation-only).
@@ -586,36 +561,71 @@ def ga_dfa_search(sampler_fn: Callable,
     # Training data is now shared from _common_init
 
     # Seed history with initial DFA
-    initial_train_acc = _compute_accuracy(initial_dfa, training_data, training_labels)
+    initial_train_acc = _AUTO_INSTANCE.compute_accuracy(initial_dfa, training_data, training_labels)
     initial_val_acc = 1.0
-    _add_to_history(all_history, seen_ids, initial_dfa, initial_train_acc, initial_val_acc)
+    _AUTO_INSTANCE.add_to_history(all_history, seen_ids, initial_dfa, initial_train_acc, initial_val_acc, use_automata_key=True)
 
     # -------- DEAP toolbox --------
     toolbox = base.Toolbox()
+
+    # Use serial map by default to avoid thread-based issues (GIL / locking)
+    toolbox.register("map", map)
 
     def _create_individual(dfa_seed):
         return creator.DFAIndividual([dfa_seed.copy()])
 
     def _evaluate(individual):
         dfa = individual[0]
-        train_acc = _compute_accuracy(dfa, training_data, training_labels)
-        val_acc = _compute_accuracy(dfa, validation_data, validation_labels)
-        _add_to_history(all_history, seen_ids, dfa, train_acc, val_acc)
+        train_acc = _AUTO_INSTANCE.compute_accuracy(dfa, training_data, training_labels)
+        val_acc = _AUTO_INSTANCE.compute_accuracy(dfa, validation_data, validation_labels)
+        _AUTO_INSTANCE.add_to_history(all_history, seen_ids, dfa, train_acc, val_acc, use_automata_key=True)
         return (train_acc,)
 
     toolbox.register("evaluate", _evaluate)
     toolbox.register("select", tools.selTournament, tournsize=tournament_size)
 
-    # Initialize population: seed with initial DFA
-    population = [_create_individual(initial_dfa)]
+    # Initialize population: generate exactly population_size individuals via single-neighbor mutations
+    # Avoids waste: propose_automata generates 100+ but we only need population_size
+    population_dfas = []
+    seen_signatures_init = set()
     
-    # Evaluate initial population
-    fitnesses = toolbox.map(toolbox.evaluate, population)
-    for ind, fit in zip(population, fitnesses):
-        ind.fitness.values = fit
+    print(f"[GA-Init] Generating initial population of {population_size} individuals...")
+    for i in range(population_size):
+        try:
+            neighbor = _AUTO_INSTANCE._propose_single_neighbor(
+                initial_dfa, state, training_data, training_labels, seen_signatures_init
+            )
+            if neighbor is not None:
+                population_dfas.append(neighbor)
+            else:
+                # Fallback: copy initial
+                population_dfas.append(initial_dfa.copy() if hasattr(initial_dfa, 'copy') else copy.deepcopy(initial_dfa))
+        except Exception as e:
+            print(f"[GA-Init] Warning: neighbor generation failed: {e}")
+            population_dfas.append(initial_dfa.copy() if hasattr(initial_dfa, 'copy') else copy.deepcopy(initial_dfa))
     
-    print(f"[GA] Initialized population: {len(population)} individual(s)")
-    print(f"[GA] Population size per generation: {population_size} (always mutate each individual)")
+    population = [_create_individual(dfa) for dfa in population_dfas]
+    print(f"[GA] Generated {len(population)} initial population")
+    
+    # Evaluate initial population (parallel)
+    try:
+        print("[GA-Init] BEFORE initial population map evaluation")
+        fitnesses = list(toolbox.map(toolbox.evaluate, population))
+        for ind, fit in zip(population, fitnesses):
+            ind.fitness.values = fit
+        print("[GA-Init] AFTER initial population map evaluation")
+    except Exception as e:
+        print(f"[GA] Parallel evaluation failed, falling back to sequential: {e}")
+        fitnesses = list(map(toolbox.evaluate, population))
+        for ind, fit in zip(population, fitnesses):
+            ind.fitness.values = fit
+    
+    # Count initial evaluations
+    evaluations_count = population_size
+    
+    print(f"[GA] Initialized population: {len(population)} individual(s), no waste from initial candidate generation")
+    print(f"[GA] Population size per generation: {population_size}")
+    # print(f"[GA] Initial evaluations: {evaluations_count} / {max_evaluations}")
     
     # Data collection for visualization
     generation_stats = []
@@ -626,58 +636,73 @@ def ga_dfa_search(sampler_fn: Callable,
         gen += 1
         print(f"\n[GA-Gen] Generation {gen}, evals: {evaluations_count}/{max_evaluations}")
         
-        # Generate new offspring for this generation
-        offspring = []
+        # Batch mutation strategy:
+        # 1. Batch select parents using tournament selection (all at once)
+        # 2. For each operation type (DELETE/MERGE/DELTA), generate ALL candidates at once
+        #    by calling _propose_* once per parent per operation
+        # 3. Pool all candidates together and random-sample without replacement
+        # 4. Evaluate all sampled candidates in parallel
+        #
+        # This reduces _propose_* calls from (offspring_target * 3) to (n_parents * 3)
+        # while reusing batch-generated candidates.
         
-        # Create population_size new individuals via mutation
-        for individual_idx in range(population_size):
-            # Break if budget exhausted
-            if evaluations_count >= max_evaluations:
-                print(f"    [GA Budget exhausted] Generated {individual_idx}/{population_size} offspring")
-                break
-            
+        # Calculate how many offspring we can generate with remaining budget
+        offspring_target = min(population_size, max_evaluations - evaluations_count)
+        
+        # 1. Batch select parents (all at once)
+        selected_parents = toolbox.select(population, offspring_target)
+        
+        # 2. For each parent, generate exactly one random neighbor (NO WASTE)
+        seen_signatures_batch = set()
+        candidates = []
+        
+        for parent_idx, parent in enumerate(selected_parents):
+            dfa_parent = parent[0]
             try:
-                # Select parent via tournament selection
-                parent = toolbox.select(population, tournament_size)[0]
-                dfa = parent[0]
-                
-                # Mutate parent to generate candidates
-                iteration = gen * population_size + individual_idx
-                candidates = _get_candidates(dfa, state, iteration, output_dir, beam_size)
-                evaluations_count += len(candidates)
-                
-                if candidates:
-                    # Pick best candidate from this mutation
-                    scored = _rank_candidates(candidates, training_data, training_labels,
-                                             validation_data, validation_labels)
-                    child = _create_individual(scored[0]['dfa'])
-                    child.fitness.values = toolbox.evaluate(child)
-                    offspring.append(child)
-                else:
-                    # No candidates, copy parent as fallback
-                    child = _create_individual(parent[0])
-                    child.fitness.values = toolbox.evaluate(child)
-                    offspring.append(child)
-                    
+                # Single-neighbor: exactly 1 candidate per parent, no waste
+                neighbor = _AUTO_INSTANCE._propose_single_neighbor(
+                    dfa_parent, state, training_data, training_labels, seen_signatures_batch
+                )
+                candidates.append(neighbor if neighbor is not None else dfa_parent.copy())
             except Exception as exc:
-                print(f"    [Warning] Generating offspring {individual_idx} failed: {exc}")
-                # Fallback: copy best individual from current population
-                if len(population) > 0:
-                    best_ind = max(population, key=lambda x: x.fitness.values[0])
-                    child = _create_individual(best_ind[0])
-                    child.fitness.values = best_ind.fitness.values
-                    offspring.append(child)
-                else:
-                    # Last resort: use initial DFA
-                    child = _create_individual(initial_dfa)
-                    child.fitness.values = toolbox.evaluate(child)
-                    offspring.append(child)
+                print(f"      [GA-Mutation] Parent {parent_idx}: {exc}, using copy")
+                candidates.append(dfa_parent.copy() if hasattr(dfa_parent, 'copy') else copy.deepcopy(dfa_parent))
         
-        # Replace population with new offspring (standard GA replacement strategy)
-        population[:] = offspring
+        print(f"    [GA-Batch] Generated {len(candidates)} neighbors (1 per parent, zero waste)...")
         
-        print(f"    [GA-Gen] Generated {len(offspring)} offspring, total population size: {len(population)}")
+        # 3. Batch evaluate all candidates in parallel via toolbox.map
+        offspring = [_create_individual(c) for c in candidates]
+        try:
+            fitnesses = list(toolbox.map(toolbox.evaluate, offspring))
+            for ind, fit in zip(offspring, fitnesses):
+                ind.fitness.values = fit
+            evaluations_count += len(offspring)
+            # print(f"    [GA-Batch] Parallel evaluation succeeded for {len(offspring)} offspring")
+        except Exception as e:
+            print(f"    [GA-Batch] Parallel evaluation failed, falling back to sequential: {e}")
+            for ind in offspring:
+                try:
+                    fit = toolbox.evaluate(ind)
+                    ind.fitness.values = fit
+                    evaluations_count += 1
+                except Exception as exc:
+                    print(f"      [Warning] Sequential evaluation failed: {exc}")
+                    # Last resort: use parent's fitness
+                    if len(population) > 0:
+                        best_ind = max(population, key=lambda x: x.fitness.values[0])
+                        ind.fitness.values = best_ind.fitness.values
         
+        # Elite preservation: keep the best individual(s) from current population
+        # Select top elite_size individuals to preserve
+        elite_size = max(1, population_size // 10)  # Keep top 10% (at least 1)
+        elite = sorted(population, key=lambda x: x.fitness.values[0], reverse=True)[:elite_size]
+        
+        # Replace population with new offspring + elite
+        population[:] = offspring + elite
+        # Trim to exact population_size if elite + offspring exceeds it
+        if len(population) > population_size:
+            population[:] = sorted(population, key=lambda x: x.fitness.values[0], reverse=True)[:population_size]
+                        
         # Log statistics
         fitnesses = [ind.fitness.values[0] for ind in population]
         best_acc = max(fitnesses)
@@ -762,14 +787,12 @@ def pso_dfa_search(sampler_fn: Callable,
     seen_ids: set = set()
     
     # Add initial DFA to history
-    initial_train_acc = _compute_accuracy(initial_dfa, training_data, training_labels)
-    initial_val_acc = _compute_accuracy(initial_dfa, validation_data, validation_labels)
-    _add_to_history(all_history, seen_ids, initial_dfa, initial_train_acc, initial_val_acc)
+    initial_train_acc = _AUTO_INSTANCE.compute_accuracy(initial_dfa, training_data, training_labels)
+    initial_val_acc = _AUTO_INSTANCE.compute_accuracy(initial_dfa, validation_data, validation_labels)
+    _AUTO_INSTANCE.add_to_history(all_history, seen_ids, initial_dfa, initial_train_acc, initial_val_acc, use_automata_key=True)
         
     # Calculate iterations based on max_evaluations and n_particles
     # Each PSO iteration evaluates n_particles candidates, so:
-    # n_iterations ≈ max_evaluations / n_particles
-    # Clamp between [5, 100] to ensure reasonable bounds
     n_iterations = max_evaluations // n_particles
     
     print(f"[PSO] Configuration:")
@@ -821,13 +844,14 @@ def pso_dfa_search(sampler_fn: Callable,
         print(f"  Best validation accuracy: {pso_result['best_validation_accuracy']:.4f}")
         print(f"  Best loss: {pso_result['best_loss']:.4f}")
         
-        # Collect all candidates from PSO history into all_history (use _add_to_history for consistency)
+        # Collect all candidates from PSO history into all_history (use add_to_history for consistency)
         if 'all_history' in pso_result:
             for candidate in pso_result['all_history']:
                 try:
-                    _add_to_history(all_history, seen_ids, candidate['automata'],
+                    _AUTO_INSTANCE.add_to_history(all_history, seen_ids, candidate['automata'],
                                     candidate.get('training_accuracy', 0.0),
-                                    candidate.get('validation_accuracy', 0.0))
+                                    candidate.get('validation_accuracy', 0.0),
+                                    use_automata_key=True)
                 except Exception:
                     continue
         # Optionally report how many evaluations PSO performed
