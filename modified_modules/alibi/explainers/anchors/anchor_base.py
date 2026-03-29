@@ -338,9 +338,9 @@ class AnchorBaseBeam:
         # verbose_count = 0
 
         # Optimized parameters for faster convergence
-        MAX_ROUNDS = 200
-        no_improvement_count = 0
-        prev_B = B
+        MAX_ROUNDS = 300
+        # no_improvement_count = 0
+        # prev_B = B
         
         while B > epsilon and t < MAX_ROUNDS:
             # if verbose_count % verbose_every == 0:
@@ -375,24 +375,24 @@ class AnchorBaseBeam:
             
             # Early stopping: check for convergence stalling (no significant improvement)
             # Use relative improvement: if B decreased by less than 1% of previous B, count as no improvement
-            improvement = prev_B - B_new
-            # More robust: use relative improvement if B > epsilon, else use absolute threshold
-            if prev_B > epsilon:
-                relative_improvement = improvement / prev_B if prev_B > 0 else 0
-                no_sig_improvement = relative_improvement < 0.01  # Less than 1% relative improvement
-            else:
-                no_sig_improvement = improvement < epsilon * 0.05  # Within 5% of epsilon
+            # improvement = prev_B - B_new
+            # # More robust: use relative improvement if B > epsilon, else use absolute threshold
+            # if prev_B > epsilon:
+            #     relative_improvement = improvement / prev_B if prev_B > 0 else 0
+            #     no_sig_improvement = relative_improvement < 0.01  # Less than 1% relative improvement
+            # else:
+            #     no_sig_improvement = improvement < epsilon * 0.05  # Within 5% of epsilon
             
-            if no_sig_improvement:
-                no_improvement_count += 1
-                if no_improvement_count >= 3:  # Stop after 3 rounds of no improvement
-                    if verbose:
-                        print(f"  [KLLUCB] Early stopping at round {t}: B not converging (B={B_new:.6f}, ε={epsilon:.6f}, improvement={improvement:.6f})")
-                    break
-            else:
-                no_improvement_count = 0
+            # if no_sig_improvement:
+            #     no_improvement_count += 1
+            #     if no_improvement_count >= 3:  # Stop after 3 rounds of no improvement
+            #         if verbose:
+            #             print(f"  [KLLUCB] Early stopping at round {t}: B not converging (B={B_new:.6f}, ε={epsilon:.6f}, improvement={improvement:.6f})")
+            #         break
+            # else:
+            #     no_improvement_count = 0
             
-            prev_B = B_new
+            # prev_B = B_new
             B = B_new
             t += 1
 
@@ -724,21 +724,24 @@ class AnchorBaseBeam:
             self.iteration = 0
             self._init_state(batch_size)
 
-            # Take a fresh copy of the shared DFA; seed state dict with shared training data
-            inti_samples = prebuilt_init.data
-            inti_label = np.asarray(prebuilt_init.labels, dtype=np.float64)
+            # Use the shared initial DFA and validation data for selection.
+            # Training data is ALWAYS resampled independently to ensure fair comparison
+            # (e.g., NO-KL-LUCB gets a fresh initial_training_accuracy computation).
             origin_automata = prebuilt_init.initial_dfa.copy()
             self.automatas = [origin_automata]
-            self.validation_data = inti_samples
-            self.state['data'] = list(inti_samples)
-
-            # Resize labels array to accommodate initial data
-            n_labels = len(inti_label)
-            if n_labels > len(self.state['labels']):
-                self.state['labels'] = np.resize(self.state['labels'], n_labels * 2)
-            self.state['labels'][:n_labels] = inti_label
-            self.state['current_idx'] = n_labels
-            print(f"[anchor_beam] prebuilt_init: {len(origin_automata.states)} states, {len(inti_samples)} training samples")
+            
+            # Store validation data for use during beam search (DFA selection)
+            validation_data = getattr(prebuilt_init, 'validation_data', None)
+            validation_labels = getattr(prebuilt_init, 'validation_labels', None)
+            if validation_data is not None:
+                self.validation_data = list(validation_data)
+                self.validation_labels = np.asarray(validation_labels, dtype=np.float64) if validation_labels is not None else None
+            
+            # IMPORTANT: Do NOT seed training data from prebuilt_init.
+            # Keep state as initialized so draw_samples will always resample fresh training data.
+            print(f"[anchor_beam] prebuilt_init: {len(origin_automata.states)} states, "
+                  f"{len(validation_data) if validation_data else 0} validation samples; "
+                  f"will resample training data independently.")
         else:
             # ---- Original initialisation: draw samples + RPNI ----
             AUTO_INSTANCE = automaton_factory(automaton_type)
@@ -799,21 +802,24 @@ class AnchorBaseBeam:
         # mean = fraction of labels sampled data that equals the label of the instance to be explained, ...
         # ... equivalent to prec(A) in paper (eq.2)
         mean = np.array([(true_accept + false_reject) / total] if total > 0 else [0.0])
-        beta = np.log(1. / delta)
-        # lower bound on mean accuracy
-        lb = self.dlow_bernoulli(mean, np.array([beta / total]))
 
         # if lower accuracy bound below tau with margin eps, keep sampling data until lb is high enough ...
         # or mean falls below accuracy threshold
-        while mean > accuracy_threshold and lb < accuracy_threshold - epsilon:
-            (n_true_accept,), (n_false_reject,), (n_total,), (n_accepted,) = self.draw_samples([self.automatas[0]], batch_size)
-            true_accept += n_true_accept
-            false_reject += n_false_reject
-            total += n_total
-            accepted += n_accepted
-            mean = np.array([(true_accept + false_reject) / total] if total > 0 else [0.0])
+        if use_kllucb:
+            beta = np.log(1. / delta)
+            # lower bound on mean accuracy
             lb = self.dlow_bernoulli(mean, np.array([beta / total]))
-        
+            while mean > accuracy_threshold and lb < accuracy_threshold - epsilon:
+                (n_true_accept,), (n_false_reject,), (n_total,), (n_accepted,) = self.draw_samples([self.automatas[0]], batch_size)
+                true_accept += n_true_accept
+                false_reject += n_false_reject
+                total += n_total
+                accepted += n_accepted
+                mean = np.array([(true_accept + false_reject) / total] if total > 0 else [0.0])
+                lb = self.dlow_bernoulli(mean, np.array([beta / total]))
+        else:
+            lb = mean
+
         # Robustly get automaton size: use .size if present, else len(states), else fallback
         automaton = self.automatas[0]
         if hasattr(automaton, 'size'):
@@ -901,12 +907,10 @@ class AnchorBaseBeam:
             # store best automatas for the given result size (nb of features in the result)
             best_of_size[self.iteration+1] = [automatas[index] for index in candidate_automatas]
             beam = best_of_size[self.iteration+1]
-            # for each candidate result:
-            #   update accuracy, lower and upper bounds until accuracy constraints are met
+            
+            # for each candidate result: get initial stats and means
             stats = self.get_init_stats(best_of_size[self.iteration+1], coverages=True)
             positives, negatives, n_accepted, n_samples = stats['positives'], stats['negatives'], stats['n_accepted'], stats['n_samples']
-            beta = np.log(1. / (delta / (1 + (beam_size - 1) * len(automatas))))
-            kl_constraints = beta / n_samples
             denom = positives + negatives
             means = np.divide(
                 denom,
@@ -914,15 +918,20 @@ class AnchorBaseBeam:
                 out=np.zeros_like(n_samples),
                 where=n_samples != 0
             )
-            lbs = self.dlow_bernoulli(means, kl_constraints)
-            ubs = self.dup_bernoulli(means, kl_constraints)
-            if verbose:
-                # print('Best of size ', self.iteration, ':')
-                for i, mean, lb, ub in zip(candidate_automatas, means, lbs, ubs):
-                    print(f"Candidate Automata ID: {id(automatas[i])}, 'mean': {mean}, 'lb': {lb}, 'ub': {ub}")
-
-            # KL-LUCB: draw samples to ensure result meets accuracy criteria
+            
+            # Only compute bounds and continue sampling if using KL-LUCB
             if use_kllucb:
+                # Compute bounds for KL-LUCB
+                beta = np.log(1. / (delta / (1 + (beam_size - 1) * len(automatas))))
+                kl_constraints = beta / n_samples
+                lbs = self.dlow_bernoulli(means, kl_constraints)
+                ubs = self.dup_bernoulli(means, kl_constraints)
+                
+                if verbose:
+                    for i, mean, lb, ub in zip(candidate_automatas, means, lbs, ubs):
+                        print(f"Candidate Automata ID: {id(automatas[i])}, 'mean': {mean}, 'lb': {lb}, 'ub': {ub}")
+
+                # Draw samples to ensure result meets accuracy criteria
                 continue_sampling = self.to_sample(means, ubs, lbs, accuracy_threshold, epsilon_stop)
             
                 while continue_sampling.any():
@@ -950,6 +959,10 @@ class AnchorBaseBeam:
                         kl_constraints[continue_sampling],
                     )
                     continue_sampling = self.to_sample(means, ubs, lbs, accuracy_threshold, epsilon_stop)
+            else:
+                # Without KL-LUCB: just use current means, no bounds, no further sampling
+                lbs = means  # Use means as lower bounds (no statistical testing)
+                ubs = means  # Use means as upper bounds too (no bounds estimation)
             
             # Collect full history
             for automata, m, lb in zip(beam, means, lbs):
