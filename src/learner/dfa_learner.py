@@ -494,12 +494,12 @@ def dfa_to_mata(dfa, file_path):
         mata_lines = ["@NFA-explicit"]
         init_name = state_map[init_state.state_id]
         mata_lines.append(f"%Initial {init_name}")
-        print(f"  [MATA] Initial state: {init_name}")
+        # print(f"  [MATA] Initial state: {init_name}")
 
         finals_str = " ".join(state_map[s.state_id] for s in finals)
         mata_lines.append(f"%Final {finals_str}")
-        print(f"  [MATA] Final states: {finals_str}")
-        print(f"  [MATA] Symbol mapping: {symbol_map}")
+        # print(f"  [MATA] Final states: {finals_str}")
+        # print(f"  [MATA] Symbol mapping: {symbol_map}")
 
         transition_count = 0
         for s in states:
@@ -762,6 +762,92 @@ class DFALearner(BaseAutomataLearner):
         dfs(dfa_obj.initial_state, [], set())
         return [list(p) for p in sorted(paths, key=len)]
     
+    # ========== Evaluation Utilities (Shared with search_baselines, pso_optimizer) ==========
+    
+    def compute_accuracy(self, dfa, data: list, labels: np.ndarray) -> float:
+        """
+        Compute training accuracy of a DFA on labeled data.
+        
+        Parameters
+        ----------
+        dfa : Dfa
+            DFA to evaluate
+        data : list
+            List of input sequences
+        labels : np.ndarray
+            Binary labels (1=accept, 0=reject)
+            
+        Returns
+        -------
+        float
+            Accuracy in [0, 1]
+        """
+        if len(data) == 0:
+            return 0.0
+        accepts = np.array([self.check_path_accepted(dfa, p) for p in data])
+        lbl = np.asarray(labels)
+        correct = int(np.sum((lbl == 1) & accepts) + np.sum((lbl == 0) & ~accepts))
+        return correct / len(lbl)
+    
+    def is_valid_dfa(self, dfa) -> bool:
+        """
+        Check if DFA is valid (has >= 2 states and at least one accepting state).
+        
+        Parameters
+        ----------
+        dfa : Dfa
+            DFA to validate
+            
+        Returns
+        -------
+        bool
+            True if valid, False otherwise
+        """
+        if not hasattr(dfa, 'states'):
+            return False
+        states = list(dfa.states)
+        return len(states) >= 2 and any(s.is_accepting for s in states)
+    
+    def add_to_history(self, all_history: list, seen_ids: set, dfa, 
+                       training_accuracy: float, validation_accuracy: float = None,
+                       use_automata_key: bool = False) -> None:
+        """
+        Add a valid, not-yet-seen DFA to history (deduplication).
+        
+        Parameters
+        ----------
+        all_history : list
+            History list to append to
+        seen_ids : set
+            Set of already-seen DFA IDs (by object id())
+        dfa : Dfa
+            DFA to add
+        training_accuracy : float
+            Training accuracy of the DFA
+        validation_accuracy : float, optional
+            Validation accuracy (default: None)
+        use_automata_key : bool
+            If True, use 'automata' key in dict (for PSO); 
+            if False, use 'dfa' key (for search_baselines)
+        """
+        dfa_id = id(dfa)
+        if dfa_id in seen_ids:
+            return
+        if not self.is_valid_dfa(dfa):
+            return
+        
+        seen_ids.add(dfa_id)
+        
+        # Use appropriate key based on caller preference
+        dfa_key = 'automata' if use_automata_key else 'dfa'
+        record = {
+            dfa_key: dfa,
+            'training_accuracy': training_accuracy,
+            'validation_accuracy': validation_accuracy,
+            'states': len(dfa.states),
+        }
+        all_history.append(record)
+    
     def clone_automaton(self, dfa):
         """Deep clone a DFA"""
         old_to_new = {}
@@ -803,6 +889,162 @@ class DFALearner(BaseAutomataLearner):
             trans = sorted([(str(sym), str(dst.state_id)) for sym, dst in s.transitions.items()])
             items.append((str(s.state_id), s.is_accepting, tuple(trans)))
         return hash(tuple(items))
+    
+    def _propose_single_neighbor(self, dfa, state, data, labels, seen_signatures):
+        """
+        Generate a single random neighbor DFA by:
+        1. Randomly choose one operation (DELETE/MERGE/DELTA)
+        2. Randomly select one state/pair to operate on
+        3. Return one result or None if operation fails
+        
+        This is much more efficient than _propose_delete/_propose_merge/_propose_delta
+        which generate many candidates. Perfect for SA and GA that need single mutations.
+        
+        Parameters
+        ----------
+        dfa : Dfa
+            The DFA to modify
+        state : dict
+            State dictionary for tracking metrics
+        data : list
+            Training data
+        labels : np.ndarray
+            Labels for training data
+        seen_signatures : set
+            Set of already seen DFA signatures to avoid duplicates
+            
+        Returns
+        -------
+        Dfa or None
+            A single new DFA or None if operation fails/is skipped
+        """
+        import gc
+        import itertools
+        
+        # Try multiple random attempts (different ops/targets) before giving up.
+        max_attempts = 10
+        for attempt in range(max_attempts):
+            operation = random.choice(['DELETE', 'MERGE', 'DELTA'])
+            try:
+                if operation == 'DELETE':
+                    deletable_states = [s for s in dfa.states
+                                       if s != dfa.initial_state
+                                       and not (s.is_accepting and sum(1 for x in dfa.states if x.is_accepting) <= 1)]
+                    if not deletable_states:
+                        continue
+
+                    target_state = random.choice(deletable_states)
+                    new_dfa = dfa.copy() if hasattr(dfa, 'copy') else clone_dfa(dfa)
+                    target = next((x for x in new_dfa.states if x.state_id == target_state.state_id), None)
+                    if target is None:
+                        continue
+
+                    outgoing = dict(target.transitions)
+                    for st in list(new_dfa.states):
+                        for sym, next_s in list(st.transitions.items()):
+                            if next_s == target:
+                                if sym in outgoing:
+                                    st.transitions[sym] = outgoing[sym]
+                                else:
+                                    st.transitions[sym] = st
+
+                    if target in new_dfa.states:
+                        new_dfa.states.remove(target)
+
+                    for st in new_dfa.states:
+                        for sym, nxt in list(st.transitions.items()):
+                            if nxt not in new_dfa.states:
+                                st.transitions[sym] = st
+
+                    remove_unreachable_states(new_dfa)
+                    if not any(st.is_accepting for st in new_dfa.states):
+                        continue
+
+                    sig = self.serialize_automaton(new_dfa)
+                    if sig in seen_signatures:
+                        continue
+                    seen_signatures.add(sig)
+                    self.update_state_metrics(state, dfa, new_dfa, data, labels, "DELETE")
+                    gc.collect()
+                    return new_dfa
+
+                elif operation == 'MERGE':
+                    states_by_accept = {}
+                    for s in dfa.states:
+                        key = s.is_accepting
+                        states_by_accept.setdefault(key, []).append(s)
+
+                    mergeable = []
+                    for state_list in states_by_accept.values():
+                        if len(state_list) >= 2:
+                            mergeable.extend([(s1, s2) for s1, s2 in itertools.combinations(state_list, 2)])
+
+                    if not mergeable:
+                        continue
+
+                    s1, s2 = random.choice(mergeable)
+                    new_dfa = dfa.copy() if hasattr(dfa, 'copy') else clone_dfa(dfa)
+                    s1_new = next((x for x in new_dfa.states if x.state_id == s1.state_id), None)
+                    s2_new = next((x for x in new_dfa.states if x.state_id == s2.state_id), None)
+                    if s1_new is None or s2_new is None:
+                        continue
+
+                    for st in new_dfa.states:
+                        for sym, tgt in list(st.transitions.items()):
+                            if tgt == s2_new:
+                                st.transitions[sym] = s1_new
+
+                    if s2_new in new_dfa.states:
+                        new_dfa.states.remove(s2_new)
+
+                    remove_unreachable_states(new_dfa)
+                    if not any(st.is_accepting for st in new_dfa.states):
+                        continue
+
+                    sig = self.serialize_automaton(new_dfa)
+                    if sig in seen_signatures:
+                        continue
+                    seen_signatures.add(sig)
+                    self.update_state_metrics(state, dfa, new_dfa, data, labels, "MERGE")
+                    gc.collect()
+                    return new_dfa
+
+                elif operation == 'DELTA':
+                    if not dfa.states:
+                        continue
+                    state_to_mod = random.choice(dfa.states)
+                    if not getattr(state_to_mod, 'transitions', None):
+                        continue
+
+                    sym_to_mod = random.choice(list(state_to_mod.transitions.keys()))
+                    target_state = random.choice(dfa.states)
+
+                    new_dfa = dfa.copy() if hasattr(dfa, 'copy') else clone_dfa(dfa)
+                    state_new = next((x for x in new_dfa.states if x.state_id == state_to_mod.state_id), None)
+                    target_new = next((x for x in new_dfa.states if x.state_id == target_state.state_id), None)
+                    if state_new is None or target_new is None:
+                        continue
+                    state_new.transitions[sym_to_mod] = target_new
+
+                    sig = self.serialize_automaton(new_dfa)
+                    if sig in seen_signatures:
+                        continue
+                    seen_signatures.add(sig)
+                    self.update_state_metrics(state, dfa, new_dfa, data, labels, "DELTA")
+                    gc.collect()
+                    return new_dfa
+
+            except Exception:
+                # ignore and retry with different random choices
+                continue
+
+        # attempts exhausted — return safe fallback (shallow copy) instead of None
+        try:
+            fallback = dfa.copy() if hasattr(dfa, 'copy') else clone_dfa(dfa)
+        except Exception:
+            fallback = dfa
+        gc.collect()
+        return fallback
     
     def automaton_to_graphviz(self, dfa, filename=None, show_sink=False, instance=None, output_dir="output") -> str:
         """
@@ -1390,14 +1632,14 @@ class DFALearner(BaseAutomataLearner):
         
         # Step 2: Find the most frequent edge
         most_frequent_edge, freq_count = max(edge_freq.items(), key=lambda x: x[1])
-        print(f"  [CXP] Most frequent edge: {most_frequent_edge} (count={freq_count})")
+        # print(f"  [CXP] Most frequent edge: {most_frequent_edge} (count={freq_count})")
 
         # Step 3: Collect paths containing the most frequent edge
         paths_containing_frequent_edge = path_by_edge[most_frequent_edge]
         if paths_containing_frequent_edge:
             shortest_path = min(paths_containing_frequent_edge, key=len)
             paths_to_analyze = [shortest_path]
-            print(f"  [CXP] Selecting shortest path (length={len(shortest_path)})")
+            # print(f"  [CXP] Selecting shortest path (length={len(shortest_path)})")
         else:
             print(f"  [CXP] No paths found containing most frequent edge, using frequency-based fallback")
             return self._fallback_blamed_edges(edge_freq, top_k=10)
@@ -1409,11 +1651,11 @@ class DFALearner(BaseAutomataLearner):
         
         for path_idx, path in enumerate(paths_to_analyze):
             try:
-                print(f"  [CXP] Processing path {path_idx}: {path}")
+                # print(f"  [CXP] Processing path {path_idx}: {path}")
                 
                 # Encode word
                 encoded_word = [alphabet_map[sym] for sym in path if sym in alphabet_map]
-                print(f"  [CXP]   Encoded word: {encoded_word}")
+                # print(f"  [CXP]   Encoded word: {encoded_word}")
                 if not encoded_word:
                     print(f"  [CXP]   Skipping: empty encoded word")
                     continue
@@ -1433,7 +1675,7 @@ class DFALearner(BaseAutomataLearner):
                     continue
                 
                 all_path_edges[path_idx] = path_edges
-                print(f"  [CXP]   Traced {len(path_edges)} edges: {path_edges}")
+                # print(f"  [CXP]   Traced {len(path_edges)} edges: {path_edges}")
                 
                 # Verify mata file exists
                 if not os.path.exists("dfa_explicit.mata"):
@@ -1443,8 +1685,8 @@ class DFALearner(BaseAutomataLearner):
                 # Compute CXP using subprocess with comprehensive error handling
                 result_json = None
                 try:
-                    print(f"  [CXP]   Calling ExplainLanguage via subprocess...")
-                    print(f"  [CXP]     - word length: {len(encoded_word)}")
+                    # print(f"  [CXP]   Calling ExplainLanguage via subprocess...")
+                    # print(f"  [CXP]     - word length: {len(encoded_word)}")
                     
                     # Encode word safely using base64
                     word_b64 = base64.b64encode(json.dumps(encoded_word).encode()).decode()
@@ -1559,7 +1801,7 @@ class DFALearner(BaseAutomataLearner):
         # Remove duplicates from shortest CXP
         cxp_best = list(set(tuple(seq) for seq in cxp_best_list))
         
-        print(f"  [CXP] Found {len(cxp_best)} unique shortest explanations (len={min_len}) [were {len(cxp_best_list)}]")
+        # print(f"  [CXP] Found {len(cxp_best)} unique shortest explanations (len={min_len}) [were {len(cxp_best_list)}]")
         
         # Extract edges from shortest CXP
         reference_path_edges = all_path_edges.get(0, [])
@@ -1572,7 +1814,7 @@ class DFALearner(BaseAutomataLearner):
                     blamed_edges_set.add((src_state_id, sym))
         
         blamed_edges_list = list(blamed_edges_set)
-        print(f"  [CXP] Identified {len(blamed_edges_list)} edges from shortest CXP")
+        # print(f"  [CXP] Identified {len(blamed_edges_list)} edges from shortest CXP")
         
         return blamed_edges_list
 
@@ -1626,19 +1868,19 @@ class DFALearner(BaseAutomataLearner):
             print("  [CXP] No misclassified paths to analyze")
             return new_dfas
         misclassified_paths = [new_data[i] for i in misclassified_indices]
-        print(f"  [CXP] Found {len(misclassified_paths)} misclassified paths")
+        # print(f"  [CXP] Found {len(misclassified_paths)} misclassified paths")
         
         # Export DFA to mata format for CXP computation
-        print(f"  [MATA] Exporting DFA with {len(dfa.states)} states to mata format")
+        # print(f"  [MATA] Exporting DFA with {len(dfa.states)} states to mata format")
         _, alphabet_map, _, _ = dfa_to_mata(dfa, "dfa_explicit.mata")
         # dfa_sig = self.serialize_automaton(dfa)
         
         # Aggregate CXP analysis
-        print(f"  [CXP] Starting CXP analysis on {len(misclassified_paths)} misclassified paths")
+        # print(f"  [CXP] Starting CXP analysis on {len(misclassified_paths)} misclassified paths")
         cxp_result = self._aggregate_cxp_analysis(
             dfa, misclassified_paths, alphabet_map, 
         )
-        print(f"  [CXP] CXP analysis completed, got {len(cxp_result)} blamed edges")
+        # print(f"  [CXP] CXP analysis completed, got {len(cxp_result)} blamed edges")
         
         # If no CXP found, return original DFA without modification
         if not cxp_result:
@@ -1664,7 +1906,7 @@ class DFALearner(BaseAutomataLearner):
         
         # Process each blamed edge
         assert cxp_result, "ExplainLanguage must have produced blamed edges"
-        print(f"  [DELTA] Processing {len(cxp_result)} blamed edges")
+        # print(f"  [DELTA] Processing {len(cxp_result)} blamed edges")
         
         for src_state_id, symbol in cxp_result:
             src_state = orig_state_by_id.get(src_state_id)
